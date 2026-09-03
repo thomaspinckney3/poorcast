@@ -394,9 +394,14 @@ pre-liquidation.
 ## Python API
 
 The CLI is a thin wrapper over `poorcast.simulate.simulate(panel, SimConfig)`.
-Some features are only reachable from Python — notably
-`SimConfig.allocation_rule`, a hook for state-dependent allocation strategies
-called at each rebalance. `poorcast/strategies.py` ships several: a funded-ratio
+Everything the flags expose is a `SimConfig`/`Withdrawal` field (`account`,
+`age`, `income` as `IncomeStream` tuples, `expenses`, `fee_annual`,
+`Withdrawal.schedule`/`decline`/`flex_floor`, ...), and the API supports
+things the CLI can't — e.g. `SimResult.months` gives each path's sampled
+historical months, so a second account can be grown on the *same* market
+paths for correlated multi-account estimates. Some features are only
+reachable from Python — notably `SimConfig.allocation_rule`, a hook for
+state-dependent allocation strategies called at each rebalance. `poorcast/strategies.py` ships several: a funded-ratio
 (LDI-style) rule, Bernstein's "stop playing when you've won" ratchet, and
 market-signal rules (trend, volatility — use those only with
 `mode="historical"`, since resampling destroys the serial structure they rely
