@@ -164,3 +164,25 @@ def test_decline_number_and_table_forms(tmp_path):
     assert load_config(write(tmp_path, text))["spend_decline"] == "1.5"
     text = "[withdrawal]\namount = '4%'\ndecline = { rate = 1, from = 75 }\n"
     assert load_config(write(tmp_path, text))["spend_decline"] == "1@75"
+
+
+def test_account_sections_parse(tmp_path):
+    text = """
+    withdraw_order = ["taxable", "traditional", "roth"]
+    [[account]]
+    type = "taxable"
+    balance = 12_000_000
+    cost_basis = 0.6
+    allocation = { us_equities = 60, muni_bonds = 35, cash = 5 }
+    [[account]]
+    type = "roth"
+    balance = 500_000
+    """
+    out = load_config(write(tmp_path, text))
+    assert out["withdraw_order"] == ("taxable", "traditional", "roth")
+    assert out["accounts"][0]["kind"] == "taxable"
+    assert out["accounts"][0]["cost_basis"] == 0.6
+    assert out["accounts"][0]["allocation"]["us_equities"] == pytest.approx(0.6)
+    assert out["accounts"][1] == {"kind": "roth", "balance": 500_000}
+    with pytest.raises(ConfigError, match="balance"):
+        load_config(write(tmp_path, "[[account]]\ntype = 'roth'\n"))

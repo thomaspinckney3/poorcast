@@ -282,6 +282,53 @@ streams rather than replacing them. A `[tips_ladder]` section (`annual`,
 the remaining features; unknown keys are hard errors with a did-you-mean
 hint, so a typo can't silently skew a forecast.
 
+## Multi-account households
+
+Real households hold several accounts with different tax treatments. Repeated
+`[[account]]` sections (config-file and Python API only) simulate them
+*jointly* — same market paths, one household spending policy:
+
+```toml
+[[account]]
+type = "taxable"
+balance = 12_000_000
+cost_basis = 0.6
+allocation = { us_equities = 60, muni_bonds = 35, cash = 5 }
+
+[[account]]
+type = "traditional"        # the 401k/IRA
+balance = 500_000
+allocation = { us_equities = 60, us_bonds_10yr = 35, cash = 5 }
+
+[[account]]
+type = "roth"
+balance = 500_000
+allocation = { us_equities = 60, us_bonds_10yr = 35, cash = 5 }
+```
+
+How it behaves:
+
+- **Withdrawals waterfall** through the accounts — taxable first, then
+  traditional, then Roth/529 by default (`withdraw_order = ["roth",
+  "taxable", ...]` overrides). Percent withdrawals are percents of the
+  *combined* starting balance; contributions and surplus income land in the
+  taxable account.
+- **Taxes are settled jointly**, as on a real return: taxable-account
+  interest, dividends, and realized gains stack with traditional-account
+  distributions through one set of brackets and one standard deduction, and
+  the bill is paid from the taxable account.
+- **RMD dollars actually move**: a required distribution beyond spending is
+  sold from the IRA, taxed, and reinvested in the taxable account (basis =
+  value) — replacing the single-account mode's deemed-distribution
+  approximation.
+- **Asset location works**: each account holds its own allocation (munis in
+  taxable, Treasuries in tax-advantaged, as above), rebalanced independently.
+- The report adds median terminal wealth per account; success still means
+  the *household* never depleted (every account empty).
+
+At most one taxable and one traditional account. `--optimize`, glidepaths,
+allocation rules, and `--tips-ladder` remain single-account features for now.
+
 ## Asset classes
 
 | name | coverage | source |
@@ -394,9 +441,10 @@ pre-liquidation.
 ## Python API
 
 The CLI is a thin wrapper over `poorcast.simulate.simulate(panel, SimConfig)`.
-Everything the flags expose is a `SimConfig`/`Withdrawal` field (`account`,
-`age`, `income` as `IncomeStream` tuples, `expenses`, `fee_annual`,
-`Withdrawal.schedule`/`decline`/`flex_floor`, ...), and the API supports
+Everything the flags expose is a `SimConfig`/`Withdrawal` field (`accounts`
+as `Account` tuples, `age`, `income` as `IncomeStream` tuples, `expenses`,
+`fee_annual`, `Withdrawal.schedule`/`decline`/`flex_floor`, ...), and the API
+supports
 things the CLI can't — e.g. `SimResult.months` gives each path's sampled
 historical months, so a second account can be grown on the *same* market
 paths for correlated multi-account estimates. Some features are only

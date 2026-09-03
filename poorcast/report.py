@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
-from .simulate import SimResult, summarize
+from .simulate import DEFAULT_WITHDRAW_ORDER, SimResult, summarize, total_initial
 
 # Reference dataviz palette (light mode): sequential blue ramp + ink tokens.
 SURFACE = "#fcfcfb"
@@ -201,10 +201,11 @@ def terminal_hist(result: SimResult, ax=None, real: bool = True):
     ax.hist(positive, bins=bins, color=BLUE_400, edgecolor=SURFACE, linewidth=0.8)
     ax.set_xscale("log")
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(_dollars))
-    ax.axvline(result.config.initial, color=INK_2, linewidth=1, linestyle="--")
+    initial = total_initial(result.config)
+    ax.axvline(initial, color=INK_2, linewidth=1, linestyle="--")
     ax.annotate(
         "  starting\n  balance",
-        (result.config.initial, ax.get_ylim()[1] * 0.82),
+        (initial, ax.get_ylim()[1] * 0.82),
         fontsize=8,
         color=INK_2,
     )
@@ -246,7 +247,23 @@ def save_report(result: SimResult, out_dir: Path, tag: str, real: bool = True) -
 
 def _describe(result: SimResult, wrap: bool = False) -> str:
     cfg = result.config
-    alloc = ", ".join(f"{int(round(v * 100))}% {k}" for k, v in cfg.allocation.items())
+
+    def _alloc_str(alloc_dict):
+        return ", ".join(f"{int(round(v * 100))}% {k}" for k, v in alloc_dict.items())
+
+    if cfg.accounts:
+        parts_a = []
+        for a in cfg.accounts:
+            desc = f"${a.balance:,.0f} {a.kind}"
+            if a.allocation:
+                desc += f" ({_alloc_str(a.allocation)})"
+            parts_a.append(desc)
+        alloc = " + ".join(parts_a)
+        order = cfg.withdraw_order or DEFAULT_WITHDRAW_ORDER
+        kinds = {a.kind for a in cfg.accounts}
+        alloc += " · spend " + " then ".join(k for k in order if k in kinds)
+    else:
+        alloc = _alloc_str(cfg.allocation)
     if cfg.allocation_end is not None:
         end = ", ".join(f"{int(round(v * 100))}% {k}" for k, v in cfg.allocation_end.items())
         span = f"{cfg.glide_years}y" if cfg.glide_years else "full horizon"
@@ -335,7 +352,7 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
     if cfg.rebalance_months == 3:
         rebal = "quarterly rebalancing"
     parts = [
-        f"{alloc} · start ${cfg.initial:,.0f}",
+        f"{alloc} · start ${total_initial(cfg):,.0f}",
         f"{wd} · {rebal}",
         f"{mode} · history {result.window.min()}–{result.window.max()}",
     ]
@@ -399,6 +416,17 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         ("95th pct", "terminal_p95"),
     ]:
         print(f"    {label}  {_dollars(s[key]):>10}")
+    if result.account_terminal is not None:
+        term = result.account_terminal
+        if real:
+            term = term / result.cum_inflation[:, -1:]
+        med = np.median(term, axis=0)
+        print(
+            "  Median terminal by account: "
+            + ", ".join(
+                f"{k} {_dollars(v)}" for k, v in zip(result.account_kinds, med)
+            )
+        )
     if cfg.contribution_monthly == 0:
         print(f"  Median {unit} growth rate: {s['median_cagr']:.2%}/yr")
         print(f"  Chance of ending below start ({unit}): {s['prob_loss']:.1%}")

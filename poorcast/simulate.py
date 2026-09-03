@@ -63,9 +63,25 @@ class IncomeStream:
     taxable: bool = False
 
 
+@dataclass(frozen=True)
+class Account:
+    """One account in a multi-account household (SimConfig.accounts).
+
+    kind: 'taxable' | 'traditional' | 'roth' | '529' - same tax semantics as
+    SimConfig.account. allocation: this account's target weights (None = the
+    config-level allocation), enabling asset location (munis in taxable,
+    Treasuries in Roth). cost_basis: starting basis fraction, taxable only.
+    """
+
+    kind: str
+    balance: float
+    allocation: dict[str, float] | None = None
+    cost_basis: float = 1.0
+
+
 @dataclass
 class SimConfig:
-    allocation: dict[str, float]  # asset -> weight, must sum to 1
+    allocation: dict[str, float] | None = None  # asset -> weight, must sum to 1
     # Optional glidepath: target weights drift linearly from `allocation` to
     # `allocation_end` over the first `glide_years` years, then hold. Same asset
     # set as `allocation`. Rebalancing tracks the moving target.
@@ -116,6 +132,19 @@ class SimConfig:
     # own future drag is ignored. 'roth' and '529' (qualified use) are
     # tax-free: no taxes modeled at all.
     account: str = "taxable"
+    # Multi-account household: when set, `account`, `initial`, and
+    # `cost_basis_start` are ignored and each Account carries its own kind,
+    # balance, allocation, and basis. Withdrawals waterfall through the
+    # accounts in `withdraw_order` (spend taxable first by default);
+    # contributions and surplus income land in the taxable account. Taxes are
+    # settled jointly (taxable investment income and traditional distributions
+    # stack through one set of brackets) and paid from the taxable account
+    # when there is one. Traditional RMD dollars beyond spending are actually
+    # transferred to the taxable account (basis = value). At most one taxable
+    # and one traditional account; glidepaths/allocation rules and the
+    # cfg-level ladder are single-account features.
+    accounts: tuple[Account, ...] | None = None
+    withdraw_order: tuple[str, ...] | None = None  # default taxable->traditional->roth->529
     age: int | None = None  # age at t=0; enables age-based features (RMDs)
     # Income streams outside the portfolio (Social Security, pensions).
     income: tuple[IncomeStream, ...] | None = None
@@ -165,6 +194,10 @@ class SimResult:
     # (n_paths,) exogenous real market log-return of the first 5 years (initial
     # target weights, before withdrawals/taxes) - for sequence-risk attribution
     early_real_market: np.ndarray | None = None
+    # Multi-account runs: kinds in config order, and nominal terminal balance
+    # per account (n_paths, n_accounts). None for single-account runs.
+    account_kinds: tuple[str, ...] | None = None
+    account_terminal: np.ndarray | None = None
 
     @property
     def real_balance(self) -> np.ndarray:
@@ -225,18 +258,106 @@ def _sample_months(cfg: SimConfig, t_hist: int, rng: np.random.Generator) -> np.
     return idx.reshape(cfg.n_sims, -1)[:, :n_months]
 
 
+ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
+DEFAULT_WITHDRAW_ORDER = ("taxable", "traditional", "roth", "529")
+
+
+def total_initial(cfg: SimConfig) -> float:
+    """Household starting balance: sum of the accounts, or `initial`."""
+    if cfg.accounts:
+        return float(sum(a.balance for a in cfg.accounts))
+    return cfg.initial
+
+
+def _weight_vec(alloc: dict[str, float], assets: list[str], label: str) -> np.ndarray:
+    w = np.array([alloc.get(a, 0.0) for a in assets], dtype=float)
+    if abs(w.sum() - 1.0) > 1e-6:
+        raise ValueError(f"{label} weights sum to {w.sum():.4f}, expected 1")
+    return w
+
+
+class _Acct:
+    """Per-account simulation state."""
+
+    __slots__ = ("kind", "weights", "holdings", "basis", "income_credit", "taxed")
+
+    def __init__(self, kind, weights, holdings, basis, taxed):
+        self.kind = kind
+        self.weights = weights
+        self.holdings = holdings
+        self.basis = basis
+        self.taxed = taxed  # taxable basis/income machinery active
+        self.income_credit = None
+
+
 def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
-    assets = list(cfg.allocation)
-    weights = np.array([cfg.allocation[a] for a in assets], dtype=float)
-    if abs(weights.sum() - 1.0) > 1e-6:
-        raise ValueError(f"allocation weights sum to {weights.sum():.4f}, expected 1")
+    multi = cfg.accounts is not None
+    if multi:
+        specs = tuple(cfg.accounts)
+        if not specs:
+            raise ValueError("accounts must be non-empty")
+        kinds = [a.kind for a in specs]
+        for a in specs:
+            if a.kind not in ACCOUNT_KINDS:
+                raise ValueError(
+                    f"account kind must be one of {ACCOUNT_KINDS}, got {a.kind!r}"
+                )
+            if a.balance <= 0:
+                raise ValueError(f"account balance must be positive, got {a.balance}")
+        if kinds.count("taxable") > 1 or kinds.count("traditional") > 1:
+            raise ValueError("at most one taxable and one traditional account")
+        if cfg.allocation_end is not None or cfg.allocation_rule is not None:
+            raise ValueError("glidepaths and allocation rules need single-account mode")
+        order = cfg.withdraw_order or DEFAULT_WITHDRAW_ORDER
+        bad = [k for k in order if k not in ACCOUNT_KINDS]
+        if bad:
+            raise ValueError(f"unknown kind(s) in withdraw_order: {bad}")
+        rank = {k: i for i, k in enumerate(order)}
+        unranked = [k for k in kinds if k not in rank]
+        if unranked:
+            raise ValueError(f"withdraw_order must cover account kind(s) {unranked}")
+        draw_order = sorted(range(len(specs)), key=lambda i: rank[kinds[i]])
+        assets: list[str] = []
+        for src in [cfg.allocation or {}] + [a.allocation or {} for a in specs]:
+            for k in src:
+                if k not in assets:
+                    assets.append(k)
+        for a in specs:
+            if a.allocation is None and not cfg.allocation:
+                raise ValueError(
+                    "an account without its own allocation needs a "
+                    "config-level allocation"
+                )
+    else:
+        if not cfg.allocation:
+            raise ValueError("allocation is required")
+        if cfg.account not in ACCOUNT_KINDS:
+            raise ValueError(
+                f"account must be taxable/traditional/roth/529, got {cfg.account!r}"
+            )
+        specs = (
+            Account(kind=cfg.account, balance=cfg.initial,
+                    allocation=cfg.allocation, cost_basis=cfg.cost_basis_start),
+        )
+        kinds = [cfg.account]
+        draw_order = [0]
+        assets = list(cfg.allocation)
     missing = [a for a in assets if a not in panel.columns]
     if missing:
         raise ValueError(f"unknown asset(s): {missing}; available: {list(panel.columns)}")
+    acct_w = [_weight_vec(s.allocation or cfg.allocation, assets, "allocation")
+              for s in specs]
+    initial_total = total_initial(cfg)
+    if multi:
+        weights = sum(s.balance * w for s, w in zip(specs, acct_w)) / initial_total
+    else:
+        weights = acct_w[0]
 
-    # Per-month target weights: static, or a linear glide over glide_years.
+    # Per-month target weights: static, or a linear glide over glide_years
+    # (single-account mode; each account in accounts mode holds its own
+    # static weights).
     n_months_total = cfg.years * 12
-    if cfg.allocation_end is not None:
+    if not multi and cfg.allocation_end is not None:
         if set(cfg.allocation_end) != set(assets):
             raise ValueError("allocation_end must use the same assets as allocation")
         w_end = np.array([cfg.allocation_end[a] for a in assets], dtype=float)
@@ -248,11 +369,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     else:
         target_w = np.tile(weights, (n_months_total, 1))
 
-    if cfg.account not in ("taxable", "traditional", "roth", "529"):
-        raise ValueError(
-            f"account must be taxable/traditional/roth/529, got {cfg.account!r}"
-        )
-    trad = cfg.account == "traditional"
+    tax_i = kinds.index("taxable") if "taxable" in kinds else None
+    trad_i = kinds.index("traditional") if "traditional" in kinds else None
+    trad = trad_i is not None
     ord_rate = cfg.tax_ordinary if cfg.tax_ordinary is not None else cfg.tax_rate
     if cfg.tax_brackets is not None:
         if cfg.tax_brackets not in ("single", "married"):
@@ -265,9 +384,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         or ord_rate > 0
         or cfg.state_tax > 0
     )
-    if cfg.account in ("roth", "529"):
-        if any_tax_setting:
-            raise ValueError(f"{cfg.account} accounts are tax-free; clear the tax settings")
+    if tax_i is None and not trad and any_tax_setting:
+        label = cfg.account if not multi else "roth/529-only households"
+        raise ValueError(f"{label} accounts are tax-free; clear the tax settings")
     if trad:
         if cfg.age is None:
             raise ValueError("traditional accounts need `age` (for RMDs)")
@@ -276,7 +395,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 "traditional accounts need tax_brackets or a flat ordinary rate "
                 "for distribution taxation"
             )
-    taxed = cfg.account == "taxable" and any_tax_setting
+    taxed = tax_i is not None and any_tax_setting
     returns_hist, inflation_hist, window, income_hist = _historical_matrix(
         panel, assets, cfg, need_income=taxed
     )
@@ -317,12 +436,12 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             seg = np.searchsorted(starts, np.arange(n_months), side="right") - 1
             spend_real_m = np.where(seg >= 0, amts[np.maximum(seg, 0)], 0.0)
         else:
-            spend_real_m = np.full(n_months, (w.amount or w.rate * cfg.initial) / 12.0)
+            spend_real_m = np.full(n_months, (w.amount or w.rate * initial_total) / 12.0)
         if w.decline:
             past = np.maximum(np.arange(n_months) - w.decline_start_month, 0) / 12.0
             spend_real_m = spend_real_m * (1.0 - w.decline) ** past
     elif w.kind == "percent_of_balance":
-        monthly_withdrawal = np.full(n_paths, cfg.initial * w.rate / 12.0)
+        monthly_withdrawal = np.full(n_paths, initial_total * w.rate / 12.0)
     elif w.kind != "none":
         raise ValueError(f"unknown withdrawal kind {w.kind!r}")
 
@@ -346,32 +465,32 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         if not 0 < w.flex_floor <= 1:
             raise ValueError(f"flex_floor must be in (0, 1], got {w.flex_floor}")
 
-    holdings = np.tile(weights * cfg.initial, (n_paths, 1))  # (n_paths, n_assets)
+    if not (0 <= cfg.tax_rate < 1 and 0 <= ord_rate < 1):
+        raise ValueError(f"tax rates must be in [0, 1), got {cfg.tax_rate}/{ord_rate}")
+    accts: list[_Acct] = []
+    for i, s in enumerate(specs):
+        h = np.tile(acct_w[i] * s.balance, (n_paths, 1))  # (n_paths, n_assets)
+        b = h * s.cost_basis  # average-cost basis per asset (taxable only)
+        accts.append(_Acct(kinds[i], acct_w[i], h, b,
+                           taxed and kinds[i] == "taxable"))
+    inflow_i = tax_i if tax_i is not None else draw_order[0]
     balance = np.empty((n_paths, n_months + 1))
-    balance[:, 0] = cfg.initial
+    balance[:, 0] = initial_total
     depleted_month = np.full(n_paths, -1, dtype=int)
     total_withdrawn = np.zeros(n_paths)
     total_withdrawn_real = np.zeros(n_paths)
 
-    if not (0 <= cfg.tax_rate < 1 and 0 <= ord_rate < 1):
-        raise ValueError(f"tax rates must be in [0, 1), got {cfg.tax_rate}/{ord_rate}")
-    basis = holdings * cfg.cost_basis_start  # average-cost basis per asset
     realized = np.zeros(n_paths)  # gains realized since last tax settlement
     loss_carry = np.zeros(n_paths)  # <= 0, carried-forward losses
     div_acc = np.zeros(n_paths)  # dividends received since last settlement
     int_acc = np.zeros(n_paths)  # interest received since last settlement
-    # Withdrawals spend the previous month's dividends/interest as cash first
-    # (those dollars have basis = value, so spending them realizes no gains);
-    # only the shortfall is a gain-realizing sale. Unspent income stays
-    # reinvested (its basis step-up already applied).
-    income_credit = np.zeros((n_paths, len(assets)))
     total_tax_real = np.zeros(n_paths)
     # Traditional-account state: nominal distributions this tax year (spending
     # withdrawals, later the tax payment itself), and the balance at the start
     # of the year that RMDs are computed from.
     dist_acc = np.zeros(n_paths)
     other_ord_acc = np.zeros(n_paths)  # taxable outside income since last settlement
-    year_start_bal = np.full(n_paths, cfg.initial)
+    year_start_bal = np.full(n_paths, initial_total)
     if taxed:
         from .data import INCOME_CLASS
 
@@ -380,6 +499,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         dividend_mask = np.array([1.0 if c == "dividend" else 0.0 for c in classes])
         # anything else (muni) is tax-exempt income: spendable, never taxed
         path_income = income_hist[months]  # (n_paths, n_months, n_assets)
+        # Withdrawals spend the previous month's dividends/interest as cash
+        # first (those dollars have basis = value, so spending them realizes
+        # no gains); only the shortfall is a gain-realizing sale. Unspent
+        # income stays reinvested (its basis step-up already applied).
+        accts[tax_i].income_credit = np.zeros((n_paths, len(assets)))
         # A taxable TIPS ladder throws off federal ordinary income each year:
         # its coupons plus the inflation accrual on remaining principal
         # ("phantom income"), both state-exempt Treasury interest. The tax is
@@ -390,24 +514,62 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             ladder_coupons = lad.coupon_income_real()
             ladder_principal = lad.remaining_principal_real()
 
-    def prorata_flow(scale: np.ndarray) -> None:
-        """Apply a pro-rata sale (scale<1) or buy (scale>1) to holdings+basis,
-        booking realized gains on the sale portion."""
+    def prorata_flow(acct: _Acct, scale: np.ndarray) -> None:
+        """Apply a pro-rata sale (scale<1) or buy (scale>1) to one account's
+        holdings+basis, booking realized gains on the sale portion."""
         nonlocal realized
-        if taxed:
+        if acct.taxed:
             selling = scale < 1
             realized += np.where(
-                selling, (1 - scale) * (holdings.sum(1) - basis.sum(1)), 0.0
+                selling, (1 - scale) * (acct.holdings.sum(1) - acct.basis.sum(1)), 0.0
             )
-            buy_add = np.where(scale > 1, scale - 1, 0.0)[:, None] * holdings
-            basis[:] = np.where(selling[:, None], basis * scale[:, None], basis + buy_add)
-        holdings[:] *= scale[:, None]
+            buy_add = np.where(scale > 1, scale - 1, 0.0)[:, None] * acct.holdings
+            acct.basis[:] = np.where(
+                selling[:, None], acct.basis * scale[:, None], acct.basis + buy_add
+            )
+        acct.holdings[:] *= scale[:, None]
+
+    def rmd_deemed(m: int) -> "np.ndarray | float":
+        """RMD dollars beyond this year's distributions. With a taxable
+        account present the shortfall is actually transferred there (sold
+        pro-rata from the IRA, bought pro-rata into the taxable account with
+        basis = value - post-tax dollars whose tax is levied at settlement);
+        otherwise it is deemed distributed and stays invested."""
+        trad_acct = accts[trad_i]
+        age_now = cfg.age + (m + 1) // 12 - 1  # age attained this sim year
+        from .tax import RMD_START_AGE, rmd_period
+
+        if age_now < RMD_START_AGE:
+            return 0.0
+        rmd = year_start_bal / rmd_period(age_now)
+        deemed = np.maximum(rmd - dist_acc, 0.0)
+        if taxed:
+            trad_tot = trad_acct.holdings.sum(axis=1)
+            deemed = np.minimum(deemed, trad_tot)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                scale_r = np.where(trad_tot > 0, (trad_tot - deemed) / trad_tot, 1.0)
+            trad_acct.holdings *= scale_r[:, None]
+            tx = accts[tax_i]
+            tx_tot = tx.holdings.sum(axis=1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                shares = np.where(
+                    tx_tot[:, None] > 0,
+                    tx.holdings / np.where(tx_tot > 0, tx_tot, 1.0)[:, None],
+                    tx.weights[None, :],
+                )
+            buy = shares * deemed[:, None]
+            tx.holdings += buy
+            tx.basis += buy
+        return deemed
 
     for m in range(n_months):
-        total = holdings.sum(axis=1)
+        totals = [a.holdings.sum(axis=1) for a in accts]
+        total = totals[0]
+        for t in totals[1:]:
+            total = total + t
         alive = total > 0
         if trad and m % 12 == 0:
-            year_start_bal = total.copy()
+            year_start_bal = totals[trad_i].copy()
 
         # Withdrawal / contribution at the start of the month, pro-rata across
         # holdings so the flow itself doesn't rebalance the portfolio.
@@ -417,7 +579,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             spend = spend_real_m[m] * cum_inflation[:, m]
             if w.flex_floor is not None:
                 real_balance = total / cum_inflation[:, m]
-                spend *= np.clip(real_balance / cfg.initial, w.flex_floor, 1.0)
+                spend *= np.clip(real_balance / initial_total, w.flex_floor, 1.0)
         elif w.kind == "percent_of_balance":
             spend = monthly_withdrawal.copy()
         else:
@@ -436,53 +598,78 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         wd = np.where(alive, np.minimum(spend, total), 0.0)
         total_withdrawn += wd
         total_withdrawn_real += wd / cum_inflation[:, m]
-        if trad:
-            dist_acc += wd
         if taxed or trad:
             other_ord_acc += income_taxed_real_m[m] * cum_inflation[:, m]
 
-        wd_to_sell = wd
+        # Waterfall: draw from accounts in withdraw_order until the need is met.
+        draws: list = [None] * len(accts)
+        remaining = wd
+        for i in draw_order:
+            take = np.minimum(remaining, totals[i])
+            draws[i] = take
+            remaining = remaining - take
+        if trad:
+            dist_acc += draws[trad_i]
+
+        wd_to_sell = draws
         if taxed:
-            # Fund the withdrawal from last month's income first: no sale, no
-            # realized gain; remove exactly the basis those dollars carry.
-            spendable = np.minimum(income_credit, np.minimum(holdings, basis))
+            # Fund the taxable draw from last month's income first: no sale,
+            # no realized gain; remove exactly the basis those dollars carry.
+            acct = accts[tax_i]
+            spendable = np.minimum(
+                acct.income_credit, np.minimum(acct.holdings, acct.basis)
+            )
             credit_total = spendable.sum(axis=1)
-            use = np.minimum(wd, credit_total)
+            use = np.minimum(draws[tax_i], credit_total)
             with np.errstate(invalid="ignore", divide="ignore"):
                 frac = np.where(credit_total > 0, use / credit_total, 0.0)
             sold = spendable * frac[:, None]
-            holdings -= sold
-            basis -= sold
-            income_credit[:] = 0.0  # unspent income reverts to reinvested
-            wd_to_sell = wd - use
-            total = holdings.sum(axis=1)
+            acct.holdings -= sold
+            acct.basis -= sold
+            acct.income_credit[:] = 0.0  # unspent income reverts to reinvested
+            wd_to_sell = list(draws)
+            wd_to_sell[tax_i] = draws[tax_i] - use
+            totals[tax_i] = acct.holdings.sum(axis=1)
 
-        flow = (
-            cfg.contribution_monthly * cum_inflation[:, m]
-            + income_invested
-            - wd_to_sell
-        )
-        with np.errstate(invalid="ignore", divide="ignore"):
-            scale = np.where(total > 0, (total + flow) / total, 0.0)
-        prorata_flow(scale)
-        newly_dead = alive & (holdings.sum(axis=1) <= 1e-9)
-        depleted_month[newly_dead] = m
-        holdings[newly_dead] = 0.0
-        basis[newly_dead] = 0.0
+        # Contributions and surplus income land in the taxable account.
+        inflow = cfg.contribution_monthly * cum_inflation[:, m] + income_invested
+        for i, acct in enumerate(accts):
+            flow = inflow - wd_to_sell[i] if i == inflow_i else -wd_to_sell[i]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                scale = np.where(totals[i] > 0, (totals[i] + flow) / totals[i], 0.0)
+            prorata_flow(acct, scale)
+        if multi:
+            for acct in accts:
+                emptied = acct.holdings.sum(axis=1) <= 1e-9
+                acct.holdings[emptied] = 0.0
+                acct.basis[emptied] = 0.0
+            house = accts[0].holdings.sum(axis=1)
+            for acct in accts[1:]:
+                house = house + acct.holdings.sum(axis=1)
+            newly_dead = alive & (house <= 1e-9)
+            depleted_month[newly_dead] = m
+        else:
+            acct = accts[0]
+            newly_dead = alive & (acct.holdings.sum(axis=1) <= 1e-9)
+            depleted_month[newly_dead] = m
+            acct.holdings[newly_dead] = 0.0
+            acct.basis[newly_dead] = 0.0
 
         # Market returns for the month.
-        holdings *= 1 + path_returns[:, m, :]
-        holdings = np.maximum(holdings, 0.0)
+        for acct in accts:
+            acct.holdings *= 1 + path_returns[:, m, :]
+            np.maximum(acct.holdings, 0.0, out=acct.holdings)
 
         if taxed:
             # Dividends/interest arrive inside the total return and are
             # reinvested; tax them at each asset's income rate and step the
             # basis up by the reinvested amount (it was already taxed).
-            income_amt = holdings * path_income[:, m, :]
+            acct = accts[tax_i]
+            income_amt = acct.holdings * path_income[:, m, :]
             int_acc += income_amt @ interest_mask
             div_acc += income_amt @ dividend_mask
-            basis += income_amt
-            income_credit = income_amt  # spendable by next month's withdrawal
+            acct.basis += income_amt
+            acct.income_credit = income_amt  # spendable by next month's withdrawal
             if ladder_coupons is not None and m // 12 < len(ladder_coupons):
                 t = m // 12
                 int_acc += (
@@ -491,105 +678,141 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                     * (cum_inflation[:, m + 1] - cum_inflation[:, m])
                 )
 
-        # Quarterly rebalance back to the (possibly gliding) target weights.
+        # Rebalance each account back to its target weights (gliding or
+        # rule-driven in single-account mode; static per account otherwise).
         if (m + 1) % cfg.rebalance_months == 0:
-            total = holdings.sum(axis=1)
-            if cfg.allocation_rule is not None:
-                state = RuleState(
-                    month=m,
-                    n_months=n_months,
-                    balance=total,
-                    price_level=cum_inflation[:, m + 1],
-                    initial=cfg.initial,
-                    monthly_withdrawal_real=(
-                        float(spend_real_m[m]) if w.kind == "fixed_real" else 0.0
-                    ),
-                    hist_indices=months[:, m],
-                )
-                targets = np.asarray(cfg.allocation_rule(state), dtype=float)
-            else:
-                targets = target_w[m][None, :]
-            new_holdings = total[:, None] * targets
-            if taxed:
-                sold = np.maximum(holdings - new_holdings, 0.0)
-                with np.errstate(invalid="ignore", divide="ignore"):
-                    gain_frac = np.where(holdings > 0, 1 - basis / holdings, 0.0)
-                realized += (sold * gain_frac).sum(axis=1)
-                with np.errstate(invalid="ignore", divide="ignore"):
-                    shrink = np.where(holdings > 0, new_holdings / holdings, 0.0)
-                basis[:] = np.where(
-                    new_holdings < holdings,
-                    basis * shrink,
-                    basis + (new_holdings - holdings),
-                )
-            holdings = new_holdings
+            for i, acct in enumerate(accts):
+                tot = acct.holdings.sum(axis=1)
+                if not multi and cfg.allocation_rule is not None:
+                    state = RuleState(
+                        month=m,
+                        n_months=n_months,
+                        balance=tot,
+                        price_level=cum_inflation[:, m + 1],
+                        initial=initial_total,
+                        monthly_withdrawal_real=(
+                            float(spend_real_m[m]) if w.kind == "fixed_real" else 0.0
+                        ),
+                        hist_indices=months[:, m],
+                    )
+                    targets = np.asarray(cfg.allocation_rule(state), dtype=float)
+                elif not multi:
+                    targets = target_w[m][None, :]
+                else:
+                    targets = acct.weights[None, :]
+                new_holdings = tot[:, None] * targets
+                if acct.taxed:
+                    sold = np.maximum(acct.holdings - new_holdings, 0.0)
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        gain_frac = np.where(
+                            acct.holdings > 0, 1 - acct.basis / acct.holdings, 0.0
+                        )
+                    realized += (sold * gain_frac).sum(axis=1)
+                    with np.errstate(invalid="ignore", divide="ignore"):
+                        shrink = np.where(
+                            acct.holdings > 0, new_holdings / acct.holdings, 0.0
+                        )
+                    acct.basis[:] = np.where(
+                        new_holdings < acct.holdings,
+                        acct.basis * shrink,
+                        acct.basis + (new_holdings - acct.holdings),
+                    )
+                acct.holdings = new_holdings
 
         # Tax settlement is independent of the rebalance schedule: annually
         # for brackets (a tax year), quarterly for flat rates.
-        if taxed and (m + 1) % (12 if cfg.tax_brackets else 3) == 0:
-            total = holdings.sum(axis=1)
-            # Net gains against carried-forward losses, then pay the tax from
-            # the portfolio (itself a pro-rata sale whose gains roll into the
-            # next settlement).
+        annual = (m + 1) % 12 == 0
+
+        # Flat-rate taxable settlement, quarterly.
+        if taxed and cfg.tax_brackets is None and (m + 1) % 3 == 0:
+            acct = accts[tax_i]
+            total_p = acct.holdings.sum(axis=1)
             net = realized + loss_carry
             gains = np.maximum(net, 0.0)
             loss_carry = np.minimum(net, 0.0)
             realized = np.zeros(n_paths)
-            if cfg.tax_brackets is None:
-                tax = (
-                    cfg.tax_rate * (gains + div_acc)
-                    + ord_rate * int_acc
-                    + (ord_rate + cfg.state_tax) * other_ord_acc
-                    + cfg.state_tax * (gains + div_acc)
-                )
-            else:
-                from .tax import annual_tax
-
-                tax = annual_tax(
-                    int_acc, div_acc + gains, cfg.tax_brackets,
-                    cum_inflation[:, m + 1], state_rate=cfg.state_tax,
-                    other_ordinary=other_ord_acc,
-                )
+            tax = (
+                cfg.tax_rate * (gains + div_acc)
+                + ord_rate * int_acc
+                + (ord_rate + cfg.state_tax) * other_ord_acc
+                + cfg.state_tax * (gains + div_acc)
+            )
             div_acc = np.zeros(n_paths)
             int_acc = np.zeros(n_paths)
             other_ord_acc = np.zeros(n_paths)
-            tax = np.minimum(tax, total)
+            tax = np.minimum(tax, total_p)
             total_tax_real += tax / cum_inflation[:, m + 1]
             with np.errstate(invalid="ignore", divide="ignore"):
-                scale_t = np.where(total > 0, (total - tax) / total, 0.0)
-            prorata_flow(np.where(total > 0, scale_t, 1.0))
+                scale_t = np.where(total_p > 0, (total_p - tax) / total_p, 0.0)
+            prorata_flow(acct, np.where(total_p > 0, scale_t, 1.0))
 
-        # Traditional IRA/401k: distributions (spending withdrawals, deemed
-        # RMD shortfalls, last year's tax payment) are ordinary income, taxed
-        # annually and paid from the portfolio. RMD dollars beyond spending
-        # are taxed but stay invested (approximating reinvestment in a
-        # taxable account whose own future drag is ignored).
-        if trad and (m + 1) % 12 == 0:
-            from .tax import RMD_START_AGE, annual_tax, rmd_period
+        # Brackets: one joint annual settlement - taxable investment income
+        # and traditional distributions stack through the same brackets and
+        # share one standard deduction, as on a real return. Paid from the
+        # taxable account when there is one (not a distribution), else from
+        # the traditional account (a distribution).
+        if cfg.tax_brackets is not None and (taxed or trad) and annual:
+            from .tax import annual_tax
 
-            total = holdings.sum(axis=1)
-            age_now = cfg.age + (m + 1) // 12 - 1  # age attained this sim year
-            deemed = 0.0
-            if age_now >= RMD_START_AGE:
-                rmd = year_start_bal / rmd_period(age_now)
-                deemed = np.maximum(rmd - dist_acc, 0.0)
-            ordinary = dist_acc + deemed + other_ord_acc
-            if cfg.tax_brackets is not None:
-                tax = annual_tax(
-                    0.0, 0.0, cfg.tax_brackets, cum_inflation[:, m + 1],
-                    state_rate=cfg.state_tax, other_ordinary=ordinary,
-                )
+            payer = accts[tax_i] if taxed else accts[trad_i]
+            total_p = payer.holdings.sum(axis=1)
+            gains = 0.0
+            if taxed:
+                net = realized + loss_carry
+                gains = np.maximum(net, 0.0)
+                loss_carry = np.minimum(net, 0.0)
+                realized = np.zeros(n_paths)
+            if trad:
+                deemed = rmd_deemed(m)
+                if taxed:
+                    total_p = payer.holdings.sum(axis=1)  # transfer landed here
+                ordinary = dist_acc + deemed + other_ord_acc
             else:
-                tax = (ord_rate + cfg.state_tax) * ordinary
-            tax = np.minimum(tax, total)
+                ordinary = other_ord_acc
+            tax = annual_tax(
+                int_acc if taxed else 0.0,
+                (div_acc + gains) if taxed else 0.0,
+                cfg.tax_brackets, cum_inflation[:, m + 1],
+                state_rate=cfg.state_tax, other_ordinary=ordinary,
+            )
+            if taxed:
+                div_acc = np.zeros(n_paths)
+                int_acc = np.zeros(n_paths)
+            other_ord_acc = np.zeros(n_paths)
+            tax = np.minimum(tax, total_p)
             total_tax_real += tax / cum_inflation[:, m + 1]
             with np.errstate(invalid="ignore", divide="ignore"):
-                scale_t = np.where(total > 0, (total - tax) / total, 1.0)
-            holdings *= scale_t[:, None]
-            dist_acc = tax.copy()  # paying the tax is itself a distribution
-            other_ord_acc = np.zeros(n_paths)
+                scale_t = np.where(
+                    total_p > 0, (total_p - tax) / total_p, 0.0 if taxed else 1.0
+                )
+            if taxed:
+                prorata_flow(payer, np.where(total_p > 0, scale_t, 1.0))
+            else:
+                payer.holdings *= scale_t[:, None]
+            if trad:
+                # A tax paid from the IRA is itself a distribution.
+                dist_acc = np.zeros(n_paths) if taxed else tax.copy()
 
-        balance[:, m + 1] = holdings.sum(axis=1)
+        # Flat-rate traditional settlement, annual.
+        if trad and cfg.tax_brackets is None and annual:
+            acct = accts[trad_i]
+            deemed = rmd_deemed(m)
+            total_p = acct.holdings.sum(axis=1)
+            ordinary = dist_acc + deemed + (other_ord_acc if not taxed else 0.0)
+            tax = (ord_rate + cfg.state_tax) * ordinary
+            if not taxed:
+                other_ord_acc = np.zeros(n_paths)
+            tax = np.minimum(tax, total_p)
+            total_tax_real += tax / cum_inflation[:, m + 1]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                scale_t = np.where(total_p > 0, (total_p - tax) / total_p, 1.0)
+            acct.holdings *= scale_t[:, None]
+            dist_acc = tax.copy()  # paying the tax is itself a distribution
+
+        tot_end = accts[0].holdings.sum(axis=1)
+        for acct in accts[1:]:
+            tot_end = tot_end + acct.holdings.sum(axis=1)
+        balance[:, m + 1] = tot_end
 
     return SimResult(
         config=cfg,
@@ -602,6 +825,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         total_withdrawn_real=total_withdrawn_real,
         total_tax_real=total_tax_real,
         early_real_market=early_real_market,
+        account_kinds=tuple(kinds) if multi else None,
+        account_terminal=(
+            np.stack([a.holdings.sum(axis=1) for a in accts], axis=1) if multi else None
+        ),
     )
 
 
@@ -611,7 +838,7 @@ def summarize(result: SimResult, real: bool = True) -> dict:
     terminal = bal[:, -1]
     pct = np.percentile(terminal, [5, 25, 50, 75, 95])
     years = result.config.years
-    initial = result.config.initial
+    initial = total_initial(result.config)
     with np.errstate(divide="ignore"):
         cagr = np.where(terminal > 0, (terminal / initial) ** (1 / years) - 1, np.nan)
     return {

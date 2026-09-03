@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from . import data as data_mod
-from .simulate import IncomeStream, SimConfig, Withdrawal, simulate
+from .simulate import Account, IncomeStream, SimConfig, Withdrawal, simulate
 
 
 def parse_allocation(text: str) -> dict[str, float]:
@@ -454,7 +454,23 @@ def main(argv: list[str] | None = None) -> int:
         print("\nCustom override: put data/custom/<asset>.csv (month,return) to extend a series.")
         return 0
 
-    if (args.allocation is None) == (not args.optimize):
+    # Multi-account household (config-file [[account]] sections only).
+    accounts = None
+    if getattr(args, "accounts", None):
+        accounts = tuple(Account(**a) for a in args.accounts)
+        for flag, val in [("--optimize", args.optimize),
+                          ("--glide-to", args.glide_to is not None),
+                          ("--tips-ladder", args.tips_ladder is not None)]:
+            if val:
+                print(f"error: {flag} is a single-account feature; drop the "
+                      "[[account]] sections to use it")
+                return 2
+        if args.allocation is None and any(a.allocation is None for a in accounts):
+            print("error: every [[account]] needs an allocation (or give a "
+                  "top-level [allocation])")
+            return 2
+        args.initial = sum(a.balance for a in accounts)
+    elif (args.allocation is None) == (not args.optimize):
         print("error: provide exactly one of --allocation or --optimize")
         return 2
     if args.optimize and args.glide_to is not None:
@@ -475,15 +491,23 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # Account type and age-based features.
-    if args.tax_deferred:
-        if args.account == "traditional":
-            print("error: --tax-deferred (no taxes) conflicts with --account traditional")
+    if accounts is not None:
+        if args.tax_deferred:
+            print("error: --tax-deferred conflicts with [[account]] sections")
             return 2
-        if args.account == "taxable":
-            args.account = "roth"
-    no_tax = args.account in ("roth", "529")
-    if args.account == "traditional" and args.age is None:
-        print("error: --account traditional needs --age (RMDs are age-based)")
+        no_tax = all(a.kind in ("roth", "529") for a in accounts)
+        needs_age = any(a.kind == "traditional" for a in accounts)
+    else:
+        if args.tax_deferred:
+            if args.account == "traditional":
+                print("error: --tax-deferred (no taxes) conflicts with --account traditional")
+                return 2
+            if args.account == "taxable":
+                args.account = "roth"
+        no_tax = args.account in ("roth", "529")
+        needs_age = args.account == "traditional"
+    if needs_age and args.age is None:
+        print("error: traditional accounts need --age (RMDs are age-based)")
         return 2
 
     def start_month(at_age: int | None, flag: str) -> int:
@@ -591,7 +615,13 @@ def main(argv: list[str] | None = None) -> int:
                 withdrawal, rate=0.0, amount=max(target - ladder.annual, 0.0)
             )
         cfg = SimConfig(
-            allocation=args.allocation or {"us_equities": 1.0},  # replaced by --optimize
+            allocation=(
+                args.allocation
+                if accounts is not None
+                else args.allocation or {"us_equities": 1.0}  # replaced by --optimize
+            ),
+            accounts=accounts,
+            withdraw_order=tuple(getattr(args, "withdraw_order", None) or ()) or None,
             allocation_end=args.glide_to,
             glide_years=args.glide_years,
             initial=run_initial,

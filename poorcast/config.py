@@ -135,7 +135,9 @@ TOP_KEYS = {
     "age", "initial", "horizons", "contribute", "optimize", "fees",
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
     "taxes", "tips_ladder", "simulation", "output",
+    "account", "withdraw_order",
 }
+ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 
 
 def load_config(path: str) -> dict:
@@ -169,6 +171,41 @@ def load_config(path: str) -> dict:
 
     if "allocation" in raw:
         out["allocation"] = _allocation(raw["allocation"], "allocation")
+
+    # Multi-account household: repeated [[account]] sections.
+    if "account" in raw:
+        entries = raw["account"]
+        if not isinstance(entries, list) or not entries:
+            raise ConfigError(
+                "account must be given as [[account]] sections (type, balance, "
+                "optional allocation/cost_basis)"
+            )
+        accounts = []
+        for i, e in enumerate(entries):
+            where = f"[[account]] #{i + 1}"
+            if not isinstance(e, dict):
+                raise ConfigError(f"{where} must be a table")
+            _reject_unknown(e, {"type", "balance", "allocation", "cost_basis"}, where)
+            for key in ("type", "balance"):
+                if key not in e:
+                    raise ConfigError(f"{where} needs `{key}`")
+            acct = {
+                "kind": _str(e["type"], f"{where}.type", ACCOUNT_KINDS),
+                "balance": _num(e["balance"], f"{where}.balance"),
+            }
+            if "allocation" in e:
+                acct["allocation"] = _allocation(e["allocation"], f"{where}.allocation")
+            if "cost_basis" in e:
+                acct["cost_basis"] = _num(e["cost_basis"], f"{where}.cost_basis")
+            accounts.append(acct)
+        out["accounts"] = accounts
+    if "withdraw_order" in raw:
+        order = raw["withdraw_order"]
+        if not isinstance(order, list):
+            raise ConfigError("withdraw_order must be an array of account types")
+        out["withdraw_order"] = tuple(
+            _str(k, "withdraw_order", ACCOUNT_KINDS) for k in order
+        )
 
     if "glide" in raw:
         g = raw["glide"]
