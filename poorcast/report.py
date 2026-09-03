@@ -325,6 +325,8 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             f"{k} {v * 100:+.2f}%/yr" for k, v in cfg.return_adjustments.items()
         )
         wd += f" · return adjustment: {adjs}"
+    if cfg.fee_annual:
+        wd += f" · fees {cfg.fee_annual:.2%}/yr"
     rebal = f"rebalancing every {cfg.rebalance_months} months"
     if cfg.rebalance_months == 3:
         rebal = "quarterly rebalancing"

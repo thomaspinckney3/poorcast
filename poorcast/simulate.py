@@ -95,6 +95,11 @@ class SimConfig:
     # every sampled month) - e.g. removing the historical multiple-expansion
     # tailwind from US equities. {'us_equities': -0.005} = -50bp/yr.
     return_adjustments: dict[str, float] | None = None
+    # Annual management/expense fee (decimal, e.g. 0.001 = 10bp) applied to
+    # every asset as a monthly return drag of fee/12 - fund expense ratios,
+    # or an advisor fee. Historical returns are index returns, so 0 models
+    # free investing.
+    fee_annual: float = 0.0
     cost_basis_start: float = 1.0  # initial basis as fraction of starting value
     # Account type: 'taxable' (default) uses the full basis/income machinery
     # above. 'traditional' (IRA/401k) taxes nothing inside the account but
@@ -273,10 +278,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     months = _sample_months(cfg, len(window), rng)
     n_paths, n_months = months.shape
 
+    if not 0 <= cfg.fee_annual < 0.1:
+        raise ValueError(f"fee_annual must be in [0, 0.1), got {cfg.fee_annual}")
     path_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
-    if cfg.return_adjustments:
-        adj = np.array([cfg.return_adjustments.get(a, 0.0) for a in assets]) / 12.0
-        path_returns = path_returns + adj[None, None, :]
+    if cfg.return_adjustments or cfg.fee_annual:
+        adj = np.array(
+            [(cfg.return_adjustments or {}).get(a, 0.0) for a in assets]
+        )
+        path_returns = path_returns + (adj - cfg.fee_annual)[None, None, :] / 12.0
     path_inflation = inflation_hist[months]  # (n_paths, n_months)
     e5 = min(60, n_months)
     early_real_market = (

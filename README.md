@@ -208,10 +208,12 @@ poorcast run --allocation us_equities=100 --withdraw 4% \
     --multiple-expansion 0 --horizons 30
 ```
 
-Other useful knobs: `--filing married`, `--state-tax 0`, `--cost-basis 0.5`
-(embedded gains), `--rebalance 12` (annual), `--start 1926-01` (sample deeper
-history, US-only assets), `--sims 50000`, `--seed 1` (reproducible),
-`--nominal` (report nominal dollars). Most age-based flags combine freely —
+Other useful knobs: `--fees 1` (annual management/expense drag in %; historical
+returns are index returns, so the default is free investing — a 1% advisor fee
+visibly moves 30-year success rates), `--filing married`, `--state-tax 0`,
+`--cost-basis 0.5` (embedded gains), `--rebalance 12` (annual),
+`--start 1926-01` (sample deeper history, US-only assets), `--sims 50000`,
+`--seed 1` (reproducible), `--nominal` (report nominal dollars). Most age-based flags combine freely —
 Social Security plus a spending schedule plus a traditional IRA is a normal
 run. `poorcast run --help` lists everything.
 
@@ -225,6 +227,7 @@ plan.toml` reads everything from a TOML file whose keys mirror the flags:
 age = 62
 initial = 1_500_000
 horizons = [25, 30, 35]
+fees = 0.08                  # blended expense ratio, %/yr
 
 [allocation]                 # percents, must sum to 100
 us_equities = 55
@@ -414,8 +417,8 @@ print(f"success: {result.success_rate:.1%}")
 ## Caveats
 
 This is a research toy, not financial advice. Bootstrapping assumes the future
-is drawn from the same distribution as 1960–present; it ignores fund fees and
-mean reversion beyond the block length. The bond and muni series are derived
+is drawn from the same distribution as 1960–present; it ignores mean reversion
+beyond the block length, and fees default to zero (set `--fees` to yours). The bond and muni series are derived
 from constant-maturity yields via a standard pricing approximation. Success
 rates above ~95% are not distinguishable from each other given history this
 short.

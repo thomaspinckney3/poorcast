@@ -132,7 +132,7 @@ def _streams(value, where: str, amount_key: str = "annual", require_at: bool = F
 
 
 TOP_KEYS = {
-    "age", "initial", "horizons", "contribute", "optimize",
+    "age", "initial", "horizons", "contribute", "optimize", "fees",
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
     "taxes", "tips_ladder", "simulation", "output",
 }
@@ -156,6 +156,8 @@ def load_config(path: str) -> dict:
         out["initial"] = _num(raw["initial"], "initial")
     if "contribute" in raw:
         out["contribute"] = _num(raw["contribute"], "contribute")
+    if "fees" in raw:
+        out["fees"] = _num(raw["fees"], "fees")
     if "optimize" in raw:
         out["optimize"] = _bool(raw["optimize"], "optimize")
     if "horizons" in raw:

@@ -10,6 +10,7 @@ age = 62
 initial = 1_500_000
 horizons = [25, 30]
 contribute = 500
+fees = 0.25
 
 [allocation]
 us_equities = 55
@@ -64,6 +65,7 @@ def test_full_config_maps_to_arg_dests(tmp_path):
     assert out["initial"] == 1_500_000
     assert out["horizons"] == "25,30"
     assert out["contribute"] == 500
+    assert out["fees"] == 0.25
     assert out["allocation"] == pytest.approx(
         {"us_equities": 0.55, "intl_equities": 0.15, "us_bonds_10yr": 0.25, "cash": 0.05}
     )

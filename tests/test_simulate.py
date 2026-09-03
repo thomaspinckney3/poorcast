@@ -360,3 +360,23 @@ def test_return_adjustment_exact():
     noop = simulate(panel, cfg(allocation={"a": 1.0},
                                return_adjustments={"b": -0.5}))
     assert np.allclose(noop.balance, plain.balance)
+
+
+def test_fee_is_exact_monthly_drag():
+    panel = make_panel(ret_a=0.0, inflation=0.0)
+    r = simulate(panel, cfg(fee_annual=0.012))
+    assert np.allclose(r.balance[:, -1], 1000.0 * (1 - 0.001) ** 120)
+
+
+def test_fee_combines_with_return_adjustments():
+    panel = make_panel(ret_a=0.0, inflation=0.0)
+    r = simulate(
+        panel, cfg(fee_annual=0.012, return_adjustments={"a": 0.012})
+    )
+    assert np.allclose(r.balance[:, -1], 1000.0)  # drag and boost cancel
+
+
+def test_fee_rejects_implausible_values():
+    panel = make_panel()
+    with pytest.raises(ValueError, match="fee_annual"):
+        simulate(panel, cfg(fee_annual=0.5))

@@ -323,6 +323,15 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "positions, e.g. 0.5)",
     )
     r.add_argument(
+        "--fees",
+        type=float,
+        default=0.0,
+        metavar="PCT",
+        help="annual management/expense fee (%%) applied to all holdings as a "
+        "return drag - fund expense ratios or an advisor fee, e.g. 0.1 for "
+        "10bp index funds, 1 for a typical advisor (default 0)",
+    )
+    r.add_argument(
         "--horizons",
         default="30",
         help="comma-separated horizons in years (default 30), e.g. 10,20,30",
@@ -590,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
             rebalance_months=args.rebalance,
             state_tax=0.0 if no_tax else args.state_tax / 100.0,
             return_adjustments=return_adjustments,
+            fee_annual=args.fees / 100.0,
             contribution_monthly=args.contribute,
             block_months=args.block,
             mode=args.mode,
