@@ -251,20 +251,51 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         end = ", ".join(f"{int(round(v * 100))}% {k}" for k, v in cfg.allocation_end.items())
         span = f"{cfg.glide_years}y" if cfg.glide_years else "full horizon"
         alloc = f"{alloc} gliding to {end} over {span}"
+    def _when(start_month: int) -> str:
+        if start_month <= 0:
+            return "start"
+        if cfg.age is not None:
+            return f"age {cfg.age + start_month // 12}"
+        return f"year {start_month // 12}"
+
     w = cfg.withdrawal
     if w.kind == "fixed_real":
-        wd = (
-            f"withdrawing {w.rate:.1%}/yr of initial (inflation-adjusted)"
-            if not w.amount
-            else f"withdrawing ${w.amount:,.0f}/yr (inflation-adjusted)"
-        )
+        if w.schedule:
+            steps = ", ".join(
+                f"${amt:,.0f}/yr from {_when(sm)}" for sm, amt in w.schedule
+            )
+            wd = f"withdrawing {steps} (inflation-adjusted)"
+        elif not w.amount:
+            wd = f"withdrawing {w.rate:.1%}/yr of initial (inflation-adjusted)"
+        else:
+            wd = f"withdrawing ${w.amount:,.0f}/yr (inflation-adjusted)"
         if w.flex_floor is not None:
             wd += f", flexed down to {w.flex_floor:.0%} in down markets"
     elif w.kind == "percent_of_balance":
         wd = f"withdrawing {w.rate:.1%}/yr of current balance"
     else:
         wd = "no withdrawals"
-    if cfg.tax_brackets is not None:
+    for s in cfg.income or ():
+        kind = "pension" if s.taxable else "income"
+        wd += f" · {kind} ${s.annual:,.0f}/yr from {_when(s.start_month)}"
+    for em, amt in cfg.expenses or ():
+        wd += f" · ${amt:,.0f} expense at {_when(em)}"
+    if cfg.account == "traditional":
+        regime = (
+            f"federal brackets ({cfg.tax_brackets} filer)"
+            if cfg.tax_brackets is not None
+            else f"{(cfg.tax_ordinary if cfg.tax_ordinary is not None else cfg.tax_rate):.0%} flat"
+        )
+        state = f" + {cfg.state_tax:.0%} state" if cfg.state_tax else ""
+        wd += (
+            f" · traditional IRA: distributions taxed as ordinary income "
+            f"({regime}{state}), RMDs from 73"
+        )
+    elif cfg.account in ("roth", "529"):
+        wd += " · " + (
+            "Roth (tax-free)" if cfg.account == "roth" else "529 (tax-free, qualified use)"
+        )
+    elif cfg.tax_brackets is not None:
         state = f" + {cfg.state_tax:.0%} state" if cfg.state_tax else ""
         wd += (
             f" · taxable, federal brackets ({cfg.tax_brackets} filer, 2026 law, "

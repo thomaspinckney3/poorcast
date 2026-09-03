@@ -44,6 +44,24 @@ BRACKETS = {
 }
 NIIT_RATE = 0.038
 
+# IRS Uniform Lifetime Table (2022+): age -> distribution period in years.
+# RMD for a year = prior Dec 31 balance / period at the age attained that year.
+RMD_START_AGE = 73  # SECURE 2.0 (rises to 75 for those reaching 73 after 2032)
+RMD_TABLE = {
+    72: 27.4, 73: 26.5, 74: 25.5, 75: 24.6, 76: 23.7, 77: 22.9, 78: 22.0,
+    79: 21.1, 80: 20.2, 81: 19.4, 82: 18.5, 83: 17.7, 84: 16.8, 85: 16.0,
+    86: 15.2, 87: 14.4, 88: 13.7, 89: 12.9, 90: 12.2, 91: 11.5, 92: 10.8,
+    93: 10.1, 94: 9.5, 95: 8.9, 96: 8.4, 97: 7.8, 98: 7.3, 99: 6.8,
+    100: 6.4, 101: 6.0, 102: 5.6, 103: 5.2, 104: 4.9, 105: 4.6, 106: 4.3,
+    107: 4.1, 108: 3.9, 109: 3.7, 110: 3.5, 111: 3.4, 112: 3.3, 113: 3.1,
+    114: 3.0, 115: 2.9, 116: 2.8, 117: 2.7, 118: 2.5, 119: 2.3, 120: 2.0,
+}
+
+
+def rmd_period(age: int) -> float:
+    """Uniform Lifetime Table distribution period for the age attained this year."""
+    return RMD_TABLE[min(max(age, 72), 120)]
+
 
 def _bracket_tax(income: np.ndarray, brackets, scale: np.ndarray) -> np.ndarray:
     """Tax on `income` under (edge, rate) brackets with edges scaled per path."""
@@ -60,12 +78,16 @@ def annual_tax(
     filing: str,
     price_level: np.ndarray | float = 1.0,
     state_rate: float = 0.0,
+    other_ordinary: np.ndarray | float = 0.0,
 ) -> np.ndarray:
     """Federal (+ flat state) tax owed on a year's investment income (nominal).
 
     interest: ordinary-rate income (Treasury coupons, T-bills) - federally
     taxed, STATE-EXEMPT. preferential: qualified dividends + net long-term
     gains - federally preferential, state-taxable at the flat state_rate.
+    other_ordinary: non-investment ordinary income (IRA distributions,
+    pensions) - stacked through the ordinary brackets, state-taxable, raises
+    MAGI for NIIT purposes but is not itself investment income.
     Muni interest never reaches this function (exempt from both, assuming
     own-state bonds). price_level: cumulative inflation factor for indexing.
     State tax is not deducted federally (standard deduction assumed).
@@ -73,11 +95,18 @@ def annual_tax(
     b = BRACKETS[filing]
     interest = np.asarray(interest, dtype=float)
     preferential = np.asarray(preferential, dtype=float)
-    scale = np.broadcast_to(np.asarray(price_level, dtype=float), interest.shape)
+    shape = np.broadcast_shapes(
+        interest.shape, preferential.shape, np.shape(other_ordinary)
+    )
+    interest = np.broadcast_to(interest, shape)
+    preferential = np.broadcast_to(preferential, shape)
+    other_ordinary = np.broadcast_to(np.asarray(other_ordinary, dtype=float), shape)
+    scale = np.broadcast_to(np.asarray(price_level, dtype=float), shape)
 
+    ordinary = interest + other_ordinary
     std = b["std_deduction"] * scale
-    taxable_ord = np.maximum(interest - std, 0.0)
-    deduction_left = np.maximum(std - interest, 0.0)
+    taxable_ord = np.maximum(ordinary - std, 0.0)
+    deduction_left = np.maximum(std - ordinary, 0.0)
     taxable_pref = np.maximum(preferential - deduction_left, 0.0)
 
     tax = _bracket_tax(taxable_ord, b["ordinary"], scale)
@@ -93,13 +122,16 @@ def annual_tax(
         hi_edge = np.minimum(hi * scale, total)
         tax += rate * np.maximum(hi_edge - lo_edge, 0.0)
 
-    # NIIT: all income here is investment income; MAGI = gross investment
-    # income; the threshold is statutory and NOT inflation-indexed.
-    magi = interest + preferential
-    nii_taxed = np.minimum(magi, np.maximum(magi - b["niit_threshold"], 0.0))
+    # NIIT: investment income above the MAGI threshold. other_ordinary raises
+    # MAGI but is not investment income; the threshold is statutory and NOT
+    # inflation-indexed.
+    invest = interest + preferential
+    magi = invest + other_ordinary
+    nii_taxed = np.minimum(invest, np.maximum(magi - b["niit_threshold"], 0.0))
     tax += NIIT_RATE * nii_taxed
 
-    # Flat state income tax on dividends and gains (states give them no
-    # preferential rate); Treasury interest is constitutionally state-exempt.
-    tax += state_rate * preferential
+    # Flat state income tax on dividends, gains, and ordinary non-investment
+    # income (states give them no preferential rate); Treasury interest is
+    # constitutionally state-exempt.
+    tax += state_rate * (preferential + other_ordinary)
     return tax

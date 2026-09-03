@@ -10,8 +10,11 @@ realistic rebalancing and US taxes.
 Use it to answer questions like:
 
 - *Can I retire on this portfolio with a 4% withdrawal rate?*
+- *How much do things change when Social Security starts at 67?*
 - *How much does cutting spending in down markets improve my odds?*
 - *What if I buy a TIPS ladder to cover my floor expenses?*
+- *Is my 401k enough, given that withdrawals get taxed and RMDs kick in?*
+- *Will this 529 cover four years of tuition starting at 18?*
 - *Which asset mix maximizes my chance of never running out?*
 
 ## Installation
@@ -76,6 +79,52 @@ realistic federal brackets plus 5% state tax on a fully taxable account — pass
 points of success rate).
 
 ## Recipes
+
+**Retiring before Social Security starts** — retire at 62 on the portfolio
+alone, then $30k/yr of (after-tax) Social Security from 67 offsets the
+withdrawals. This routinely moves success rates more than any allocation
+change:
+
+```bash
+poorcast run --allocation us_equities=60,us_bonds_10yr=35,cash=5 \
+    --withdraw 4% --age 62 --income 30000@67 --horizons 30
+```
+
+`--income` is treated as after-tax (a fair approximation for Social Security
+at modest incomes); use `--pension` for streams taxed as ordinary income. Both
+repeat: `--income 30000@67 --pension 12000@65`. Any income beyond that month's
+spending is invested.
+
+**The money is in a 401k/IRA** — traditional accounts tax nothing inside, but
+every withdrawal is ordinary income, and required minimum distributions start
+at 73 (both need `--age`):
+
+```bash
+poorcast run --allocation us_equities=60,us_bonds_10yr=40 \
+    --withdraw 50000 --age 65 --account traditional --horizons 30
+```
+
+`--account roth` is tax-free (the old `--tax-deferred` flag now means this).
+
+**Spending that changes with age** — the "retirement smile": spend more in the
+go-go years, less later, plus a new roof at 70:
+
+```bash
+poorcast run --allocation us_equities=60,us_bonds_10yr=40 --age 65 \
+    --withdraw "90000:65-75,70000:75+" --expense 50000@70 --horizons 30
+```
+
+Schedule segments are `AMOUNT:FROM-TO` or `AMOUNT:FROM+` (ages; amounts may be
+percents of the initial balance); `--expense` adds one-time real outlays.
+
+**College savings (529)** — $20k saved for a 3-year-old, $500/month
+contributions, four years of $40k tuition from 18; qualified 529 withdrawals
+are tax-free:
+
+```bash
+poorcast run --allocation us_equities=70,us_bonds_10yr=30 --account 529 \
+    --initial 20000 --age 3 --contribute 500 --withdraw "40000:18-22" --horizons 19
+```
 
 **Still saving, not withdrawing** — accumulate $2,000/month (today's dollars,
 grown with inflation) for 25 years:
@@ -162,7 +211,9 @@ poorcast run --allocation us_equities=100 --withdraw 4% \
 Other useful knobs: `--filing married`, `--state-tax 0`, `--cost-basis 0.5`
 (embedded gains), `--rebalance 12` (annual), `--start 1926-01` (sample deeper
 history, US-only assets), `--sims 50000`, `--seed 1` (reproducible),
-`--nominal` (report nominal dollars). `poorcast run --help` lists everything.
+`--nominal` (report nominal dollars). Most age-based flags combine freely —
+Social Security plus a spending schedule plus a traditional IRA is a normal
+run. `poorcast run --help` lists everything.
 
 ## Asset classes
 
@@ -241,14 +292,27 @@ income tax on dividends and realized gains — Treasury interest is
 constitutionally state-exempt, and `muni_bonds` income is exempt at both
 levels (own-state assumption); muni *capital gains* are taxed normally.
 
-`--tax-deferred` turns taxes off entirely (IRA/401k). `--tax-rate 15
---tax-ordinary 24` overrides the brackets with flat rates settled quarterly.
+**Account types** (`--account`): `taxable` (default) applies all of the
+above. `traditional` (IRA/401k) taxes nothing inside the account; instead
+every distribution — spending withdrawals, and the tax payments themselves —
+is taxed as ordinary income through the same brackets (with the standard
+deduction), and RMDs are enforced from age 73 per the IRS Uniform Lifetime
+Table: required dollars beyond spending are deemed distributed and taxed,
+while staying invested (approximating reinvestment in a taxable account whose
+own future tax drag is ignored — a mild flattery late in life). `roth` and
+`529` (qualified use) are tax-free. `--pension` income is taxed as ordinary
+income in whichever regime is active and raises MAGI for NIIT purposes.
+
+`--tax-rate 15 --tax-ordinary 24` overrides the brackets with flat rates
+settled quarterly (for traditional accounts, the ordinary rate applies to
+distributions annually).
 
 Income components are observed data: Shiller monthly dividend yields for US
 equities (also the small-cap proxy), JST dividend/price for international,
-GS10 coupon accrual for bonds. Not modeled: non-portfolio income, short-term
-gain rates, the $3,000 loss offset against ordinary income, step-up at death;
-terminal wealth is pre-liquidation.
+GS10 coupon accrual for bonds. Not modeled: Social Security benefit taxation
+(`--income` is treated as fully after-tax), short-term gain rates, the $3,000
+loss offset against ordinary income, step-up at death; terminal wealth is
+pre-liquidation.
 
 ## Commands
 

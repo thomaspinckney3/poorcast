@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from . import data as data_mod
-from .simulate import SimConfig, Withdrawal, simulate
+from .simulate import IncomeStream, SimConfig, Withdrawal, simulate
 
 
 def parse_allocation(text: str) -> dict[str, float]:
@@ -49,6 +49,68 @@ def parse_withdrawal(text: str | None, strategy: str) -> Withdrawal:
             "percent-of-balance strategy needs a percentage, e.g. --withdraw 3%"
         )
     return Withdrawal("fixed_real", amount=float(text.replace("_", "").replace(",", "")))
+
+
+def _dollars(text: str) -> float:
+    return float(text.replace("_", "").replace(",", ""))
+
+
+def parse_at_age(text: str) -> tuple[float, int | None]:
+    """'30000@67' -> (30000.0, 67); '30000' -> (30000.0, None)."""
+    if "@" in text:
+        amt, at = text.split("@", 1)
+        return _dollars(amt), int(at)
+    return _dollars(text), None
+
+
+def parse_schedule(text: str, age: int, initial: float) -> tuple[tuple[int, float], ...]:
+    """Age-varying spending: '80000:65-75,60000:75+' -> ((start_month, annual), ...).
+
+    Each segment is AMOUNT:FROM-TO or AMOUNT:FROM+ (ages; FROM inclusive, TO
+    exclusive). AMOUNT may be a percent of the initial balance ('4%').
+    Segments may not overlap; uncovered ages spend nothing.
+    """
+    segs = []
+    for part in text.split(","):
+        if ":" not in part:
+            raise ValueError(
+                f"bad schedule entry {part!r}; expected AMOUNT:FROM-TO or AMOUNT:FROM+"
+            )
+        amt_s, rng = part.rsplit(":", 1)
+        amt = (
+            float(amt_s[:-1]) / 100.0 * initial
+            if amt_s.endswith("%")
+            else _dollars(amt_s)
+        )
+        if rng.endswith("+"):
+            a, b = int(rng[:-1]), None
+        elif "-" in rng:
+            a_s, b_s = rng.split("-", 1)
+            a, b = int(a_s), int(b_s)
+            if b <= a:
+                raise ValueError(f"empty age range {rng!r}")
+        else:
+            raise ValueError(f"bad age range {rng!r}; expected FROM-TO or FROM+")
+        segs.append(((a - age) * 12, None if b is None else (b - age) * 12, amt))
+    segs.sort(key=lambda s: s[0])
+    sched: list[tuple[int, float]] = []
+    prev_end: int | None = None
+    for i, (start_m, end_m, amt) in enumerate(segs):
+        if i > 0 and (prev_end is None or start_m < prev_end):
+            raise ValueError("overlapping withdrawal schedule segments")
+        if end_m is not None and end_m <= 0:
+            prev_end = end_m
+            continue  # segment lies entirely before the starting age
+        start = max(start_m, 0)
+        if sched and prev_end is not None and start > max(prev_end, 0):
+            sched.append((max(prev_end, 0), 0.0))  # gap: no spending
+        sched.append((start, amt))
+        prev_end = end_m
+    if not sched:
+        raise ValueError("withdrawal schedule lies entirely before the starting age")
+    if prev_end is not None and max(prev_end, 0) > sched[-1][0]:
+        sched.append((max(prev_end, 0), 0.0))  # bounded last segment: stop after
+    return tuple(sched)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,7 +166,51 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--withdraw",
         default=None,
-        help="annual withdrawal: '3%%' (percent rule) or '40000' (dollars/yr, inflation-adjusted)",
+        help="annual withdrawal: '3%%' (percent rule), '40000' (dollars/yr, "
+        "inflation-adjusted), or with --age an age-varying schedule like "
+        "'80000:65-75,60000:75+' (amounts may also be percents of initial)",
+    )
+    r.add_argument(
+        "--age",
+        type=int,
+        default=None,
+        help="age at the start of the simulation; enables age-based features: "
+        "@AGE in --income/--pension/--expense, withdrawal schedules, and RMDs "
+        "for traditional accounts",
+    )
+    r.add_argument(
+        "--account",
+        choices=["taxable", "traditional", "roth", "529"],
+        default="taxable",
+        help="account type (default taxable, with full dividend/gains taxation). "
+        "traditional (IRA/401k): nothing taxed inside, every distribution taxed "
+        "as ordinary income, RMDs from age 73 (needs --age). roth and 529 "
+        "(qualified use): tax-free",
+    )
+    r.add_argument(
+        "--income",
+        action="append",
+        default=[],
+        metavar="ANNUAL[@AGE]",
+        help="outside income in today's dollars/yr, treated as after-tax "
+        "(approximates Social Security): e.g. --income 30000@67. Offsets "
+        "withdrawals; any surplus is invested. Repeatable; @AGE needs --age",
+    )
+    r.add_argument(
+        "--pension",
+        action="append",
+        default=[],
+        metavar="ANNUAL[@AGE]",
+        help="like --income but taxed as ordinary income (pension, annuity "
+        "payout). Repeatable",
+    )
+    r.add_argument(
+        "--expense",
+        action="append",
+        default=[],
+        metavar="AMOUNT@AGE",
+        help="one-time expense in today's dollars at an age (a roof, a car, "
+        "a wedding): e.g. --expense 50000@70. Repeatable; needs --age",
     )
     r.add_argument(
         "--withdraw-strategy",
@@ -179,7 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--tax-deferred",
         action="store_true",
-        help="treat the portfolio as tax-deferred (IRA/401k): no taxes modeled",
+        help="alias for --account roth: no taxes modeled (use --account "
+        "traditional for an IRA/401k whose withdrawals are taxed)",
     )
     r.add_argument(
         "--tax-rate",
@@ -317,7 +424,61 @@ def main(argv: list[str] | None = None) -> int:
             f"{delta * 100:+.2f}%/yr"
         )
 
-    withdrawal = parse_withdrawal(args.withdraw, args.withdraw_strategy)
+    # Account type and age-based features.
+    if args.tax_deferred:
+        if args.account == "traditional":
+            print("error: --tax-deferred (no taxes) conflicts with --account traditional")
+            return 2
+        if args.account == "taxable":
+            args.account = "roth"
+    no_tax = args.account in ("roth", "529")
+    if args.account == "traditional" and args.age is None:
+        print("error: --account traditional needs --age (RMDs are age-based)")
+        return 2
+
+    def start_month(at_age: int | None, flag: str) -> int:
+        if at_age is None:
+            return 0
+        if args.age is None:
+            raise ValueError(f"{flag} with @AGE needs --age")
+        return max((at_age - args.age) * 12, 0)
+
+    streams: list[IncomeStream] = []
+    expenses: list[tuple[int, float]] = []
+    try:
+        for text in args.income:
+            amt, at = parse_at_age(text)
+            streams.append(IncomeStream(amt, start_month(at, "--income")))
+        for text in args.pension:
+            amt, at = parse_at_age(text)
+            streams.append(IncomeStream(amt, start_month(at, "--pension"), taxable=True))
+        for text in args.expense:
+            amt, at = parse_at_age(text)
+            if at is None or args.age is None:
+                raise ValueError("--expense needs AMOUNT@AGE and --age")
+            expenses.append((max((at - args.age) * 12, 0), amt))
+    except ValueError as e:
+        print(f"error: {e}")
+        return 2
+    if no_tax and args.pension:
+        print("note: taxes are off for this account; --pension is treated like --income")
+
+    if args.withdraw and ":" in args.withdraw:
+        if args.age is None:
+            print("error: withdrawal schedules need --age")
+            return 2
+        if args.withdraw_strategy != "fixed-real":
+            print("error: withdrawal schedules only work with the fixed-real strategy")
+            return 2
+        try:
+            withdrawal = Withdrawal(
+                "fixed_real", schedule=parse_schedule(args.withdraw, args.age, args.initial)
+            )
+        except ValueError as e:
+            print(f"error: {e}")
+            return 2
+    else:
+        withdrawal = parse_withdrawal(args.withdraw, args.withdraw_strategy)
     if args.flex is not None:
         if withdrawal.kind != "fixed_real":
             print("error: --flex requires a fixed-real withdrawal (e.g. --withdraw 4%)")
@@ -328,8 +489,13 @@ def main(argv: list[str] | None = None) -> int:
 
     from .report import print_summary, save_report  # defer matplotlib import
 
-    if args.tips_ladder is not None and withdrawal.kind != "fixed_real":
-        print("error: --tips-ladder requires a fixed-real withdrawal (e.g. --withdraw 4%)")
+    if args.tips_ladder is not None and (
+        withdrawal.kind != "fixed_real" or withdrawal.schedule is not None
+    ):
+        print(
+            "error: --tips-ladder requires a plain fixed-real withdrawal "
+            "(e.g. --withdraw 4%), not a schedule"
+        )
         return 2
 
     for years in horizons:
@@ -341,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
 
             from .ladder import build_ladder, build_ladder_curve, current_real_curve
 
-            ladder_taxable = not args.tax_deferred and not args.tips_ladder_deferred
+            ladder_taxable = not no_tax and not args.tips_ladder_deferred
             if args.tips_ladder_curve:
                 ladder = build_ladder_curve(
                     args.tips_ladder, years, current_real_curve(), taxable=ladder_taxable
@@ -372,18 +538,25 @@ def main(argv: list[str] | None = None) -> int:
             n_sims=args.sims,
             withdrawal=run_withdrawal,
             ladder=ladder,
-            tax_rate=args.tax_rate / 100.0,
-            tax_ordinary=None if args.tax_ordinary is None else args.tax_ordinary / 100.0,
-            # Default: fully taxable under federal brackets. Flat rates or
-            # --tax-deferred switch that off.
+            account=args.account,
+            age=args.age,
+            income=tuple(streams) or None,
+            expenses=tuple(expenses) or None,
+            tax_rate=0.0 if no_tax else args.tax_rate / 100.0,
+            tax_ordinary=(
+                None if no_tax or args.tax_ordinary is None else args.tax_ordinary / 100.0
+            ),
+            # Default: fully taxable under federal brackets (as distribution
+            # taxation for traditional accounts). Flat rates or a tax-free
+            # account switch that off.
             tax_brackets=(
                 None
-                if args.tax_deferred or args.tax_rate or args.tax_ordinary is not None
+                if no_tax or args.tax_rate or args.tax_ordinary is not None
                 else args.filing
             ),
             cost_basis_start=args.cost_basis,
             rebalance_months=args.rebalance,
-            state_tax=0.0 if args.tax_deferred else args.state_tax / 100.0,
+            state_tax=0.0 if no_tax else args.state_tax / 100.0,
             return_adjustments=return_adjustments,
             contribution_monthly=args.contribute,
             block_months=args.block,
