@@ -7,6 +7,8 @@ Examples:
                --initial 1000000 --withdraw 3% --horizons 20,30,40
   poorcast run --allocation us_equities=100 --contribute 2000 --horizons 25 --no-charts
   poorcast run --allocation us_equities=60,us_bonds_10yr=40 --withdraw 4% --mode historical
+  poorcast run --config plan.toml
+  poorcast run --config plan.toml --withdraw 3.5%   # what-if: flags beat the file
 """
 
 from __future__ import annotations
@@ -113,7 +115,7 @@ def parse_schedule(text: str, age: int, initial: float) -> tuple[tuple[int, floa
     return tuple(sched)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="poorcast",
         description="Monte Carlo portfolio forecasting driven by actual market history",
@@ -136,6 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     r = sub.add_parser("run", help="run a simulation")
+    r.add_argument(
+        "--config",
+        metavar="FILE",
+        default=None,
+        help="TOML file of run settings (keys mirror these flags; see the "
+        "README). Explicit command-line flags override file values",
+    )
     r.add_argument(
         "--allocation",
         type=parse_allocation,
@@ -355,11 +364,34 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--nominal", action="store_true", help="report nominal dollars instead of real")
     r.add_argument("--out", default="out", help="directory for charts (default ./out)")
     r.add_argument("--no-charts", action="store_true", help="skip chart generation")
+    if run_defaults:
+        r.set_defaults(**run_defaults)
     return p
 
 
+def _config_path(argv: list[str]) -> str | None:
+    for i, tok in enumerate(argv):
+        if tok == "--config" and i + 1 < len(argv):
+            return argv[i + 1]
+        if tok.startswith("--config="):
+            return tok.split("=", 1)[1]
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    # --config values become argparse defaults, so explicit flags override.
+    run_defaults = None
+    cfg_path = _config_path(argv)
+    if cfg_path is not None:
+        from .config import ConfigError, load_config
+
+        try:
+            run_defaults = load_config(cfg_path)
+        except ConfigError as e:
+            print(f"error: {e}")
+            return 2
+    args = build_parser(run_defaults).parse_args(argv)
 
     if args.command == "fetch":
         panel = data_mod.build_panel(refresh=True)

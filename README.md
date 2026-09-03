@@ -215,6 +215,65 @@ history, US-only assets), `--sims 50000`, `--seed 1` (reproducible),
 Social Security plus a spending schedule plus a traditional IRA is a normal
 run. `poorcast run --help` lists everything.
 
+## Config files
+
+A real plan doesn't fit comfortably on a command line. `poorcast run --config
+plan.toml` reads everything from a TOML file whose keys mirror the flags:
+
+```toml
+# Our retirement plan, revisited 2026-09
+age = 62
+initial = 1_500_000
+horizons = [25, 30, 35]
+
+[allocation]                 # percents, must sum to 100
+us_equities = 55
+intl_equities = 15
+us_bonds_10yr = 25
+cash = 5
+
+[withdrawal]
+amount = "4%"                # "4%" or 60000; or use `schedule` instead:
+# schedule = [
+#   { amount = 90_000, from = 65, to = 75 },   # go-go years
+#   { amount = 70_000, from = 75 },            # open-ended
+# ]
+flex = 75                    # optional belt-tightening floor (%)
+
+[[income]]                   # after-tax streams (Social Security); repeatable
+annual = 30_000
+at = 67
+
+[[pension]]                  # taxed as ordinary income
+annual = 12_000
+at = 65
+
+[[expense]]                  # one-time outlays, today's dollars
+amount = 50_000
+at = 70                      # the roof
+
+[taxes]
+account = "taxable"          # taxable | traditional | roth | 529
+filing = "married"
+state = 5
+cost_basis = 0.6
+
+[simulation]                 # all optional
+sims = 10_000
+seed = 42
+
+[output]
+charts = true
+```
+
+Explicit command-line flags override the file, so what-ifs don't require
+editing the plan: `poorcast run --config plan.toml --withdraw 3.5%`. The
+repeatable flags (`--income`, `--pension`, `--expense`) *add* to the file's
+streams rather than replacing them. A `[tips_ladder]` section (`annual`,
+`yield`, `curve`, `deferred`) and a `[glide]` section (`to`, `years`) cover
+the remaining features; unknown keys are hard errors with a did-you-mean
+hint, so a typo can't silently skew a forecast.
+
 ## Asset classes
 
 | name | coverage | source |
