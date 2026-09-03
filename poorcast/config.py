@@ -181,7 +181,9 @@ def load_config(path: str) -> dict:
 
     if "withdrawal" in raw:
         w = raw["withdrawal"]
-        _reject_unknown(w, {"amount", "schedule", "strategy", "flex"}, "[withdrawal]")
+        _reject_unknown(
+            w, {"amount", "schedule", "strategy", "flex", "decline"}, "[withdrawal]"
+        )
         if "amount" in w and "schedule" in w:
             raise ConfigError("[withdrawal] takes `amount` or `schedule`, not both")
         if "amount" in w:
@@ -195,6 +197,20 @@ def load_config(path: str) -> dict:
             )
         if "flex" in w:
             out["flex"] = 75.0 if w["flex"] is True else _num(w["flex"], "withdrawal.flex")
+        if "decline" in w:
+            d = w["decline"]
+            if isinstance(d, dict):
+                _reject_unknown(d, {"rate", "from"}, "withdrawal.decline")
+                if "rate" not in d:
+                    raise ConfigError("withdrawal.decline needs `rate` (%/yr)")
+                rate = _num(d["rate"], "withdrawal.decline.rate")
+                if "from" in d:
+                    frm = _int(d["from"], "withdrawal.decline.from")
+                    out["spend_decline"] = f"{rate:g}@{frm}"
+                else:
+                    out["spend_decline"] = f"{rate:g}"
+            else:
+                out["spend_decline"] = f"{_num(d, 'withdrawal.decline'):g}"
 
     if "income" in raw:
         out["income"] = _streams(raw["income"], "income")

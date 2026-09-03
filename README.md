@@ -115,7 +115,11 @@ poorcast run --allocation us_equities=60,us_bonds_10yr=40 --age 65 \
 ```
 
 Schedule segments are `AMOUNT:FROM-TO` or `AMOUNT:FROM+` (ages; amounts may be
-percents of the initial balance); `--expense` adds one-time real outlays.
+percents of the initial balance); `--expense` adds one-time real outlays. For
+a smooth glide instead of steps, `--spend-decline 1` shrinks real spending 1%
+a year, compounding (Blanchett's measured "retirement smile" downslope is
+roughly that); `--spend-decline 1@75` starts the decline at 75. It composes
+with schedules and `--flex`.
 
 **College savings (529)** — $20k saved for a 3-year-old, $500/month
 contributions, four years of $40k tuition from 18; qualified 529 withdrawals
@@ -242,6 +246,7 @@ amount = "4%"                # "4%" or 60000; or use `schedule` instead:
 #   { amount = 70_000, from = 75 },            # open-ended
 # ]
 flex = 75                    # optional belt-tightening floor (%)
+decline = { rate = 1, from = 75 }   # or `decline = 1`: real spending -1%/yr
 
 [[income]]                   # after-tax streams (Social Security); repeatable
 annual = 30_000

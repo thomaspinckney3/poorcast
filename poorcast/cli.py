@@ -229,6 +229,15 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "percent-of-balance: %% of current balance, recomputed yearly (never fully depletes)",
     )
     r.add_argument(
+        "--spend-decline",
+        default=None,
+        metavar="PCT[@AGE]",
+        help="real spending declines PCT%%/yr, compounding - the observed "
+        "'retirement smile' downslope (Blanchett measured roughly 1): e.g. "
+        "--spend-decline 1, or 1@75 to start the decline at 75 (needs --age). "
+        "Composes with schedules and --flex; fixed-real withdrawals only",
+    )
+    r.add_argument(
         "--flex",
         nargs="?",
         const=75.0,
@@ -520,6 +529,17 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     else:
         withdrawal = parse_withdrawal(args.withdraw, args.withdraw_strategy)
+    if args.spend_decline is not None:
+        if withdrawal.kind != "fixed_real":
+            print("error: --spend-decline requires a fixed-real withdrawal")
+            return 2
+        try:
+            rate, at = parse_at_age(args.spend_decline)
+            withdrawal.decline = rate / 100.0
+            withdrawal.decline_start_month = start_month(at, "--spend-decline")
+        except ValueError as e:
+            print(f"error: {e}")
+            return 2
     if args.flex is not None:
         if withdrawal.kind != "fixed_real":
             print("error: --flex requires a fixed-real withdrawal (e.g. --withdraw 4%)")

@@ -269,6 +269,10 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             wd = f"withdrawing {w.rate:.1%}/yr of initial (inflation-adjusted)"
         else:
             wd = f"withdrawing ${w.amount:,.0f}/yr (inflation-adjusted)"
+        if w.decline:
+            wd += f", spending declining {w.decline:.1%}/yr"
+            if w.decline_start_month > 0:
+                wd += f" from {_when(w.decline_start_month)}"
         if w.flex_floor is not None:
             wd += f", flexed down to {w.flex_floor:.0%} in down markets"
     elif w.kind == "percent_of_balance":

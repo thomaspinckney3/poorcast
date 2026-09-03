@@ -226,3 +226,50 @@ def test_other_ordinary_raises_magi_for_niit_but_is_not_nii():
         + 0.32 * (233_900 - 201_775)
     )
     assert np.allclose(tax, ordinary + 0.038 * 50_000.0)
+
+
+# --- spending decline --------------------------------------------------------
+
+
+def test_spend_decline_halves_each_year():
+    panel = make_panel()
+    c = cfg(
+        years=2, withdrawal=Withdrawal("fixed_real", amount=120.0, decline=0.5)
+    )
+    r = simulate(panel, c)
+    # Month 0 spends 10; a year later the target has halved to 5.
+    assert np.allclose(r.balance[:, 0] - r.balance[:, 1], 10.0)
+    assert np.allclose(r.balance[:, 12] - r.balance[:, 13], 5.0)
+
+
+def test_spend_decline_start_month_delays_decline():
+    panel = make_panel()
+    c = cfg(
+        years=2,
+        withdrawal=Withdrawal(
+            "fixed_real", amount=120.0, decline=0.5, decline_start_month=12
+        ),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.balance[:, 12], 1000.0 - 120.0)  # year 1 at full target
+    assert np.allclose(r.balance[:, 12] - r.balance[:, 13], 10.0)  # decline starts
+    assert np.allclose(r.balance[:, -2] - r.balance[:, -1], 10.0 * 0.5 ** (11 / 12))
+
+
+def test_spend_decline_composes_with_schedule():
+    panel = make_panel()
+    c = cfg(
+        years=2,
+        withdrawal=Withdrawal(
+            "fixed_real", schedule=((0, 120.0), (12, 240.0)), decline=0.5
+        ),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.balance[:, 0] - r.balance[:, 1], 10.0)
+    assert np.allclose(r.balance[:, 12] - r.balance[:, 13], 10.0)  # 20 halved
+
+
+def test_spend_decline_requires_fixed_real():
+    panel = make_panel()
+    with pytest.raises(ValueError, match="fixed_real"):
+        simulate(panel, cfg(withdrawal=Withdrawal("none", decline=0.01)))

@@ -42,6 +42,12 @@ class Withdrawal:
     # dollars) steps; each amount applies from its start month until the next
     # step (the last runs to the horizon). Overrides rate/amount when set.
     schedule: tuple[tuple[int, float], ...] | None = None
+    # Smooth real spending decline (fixed_real only): the target shrinks by
+    # `decline` per year (e.g. 0.01 = 1%/yr, the observed "retirement smile"
+    # downslope), compounding monthly from decline_start_month. Composes with
+    # amount/rate/schedule and with flex_floor.
+    decline: float = 0.0
+    decline_start_month: int = 0
 
 
 @dataclass(frozen=True)
@@ -297,6 +303,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     w = cfg.withdrawal
     if w.schedule is not None and w.kind != "fixed_real":
         raise ValueError("withdrawal schedules only apply to fixed_real withdrawals")
+    if w.decline and w.kind != "fixed_real":
+        raise ValueError("spending decline only applies to fixed_real withdrawals")
+    if not 0 <= w.decline < 1:
+        raise ValueError(f"decline must be in [0, 1), got {w.decline}")
     if w.kind == "fixed_real":
         # Per-month real spending target: constant, or a step schedule.
         if w.schedule:
@@ -308,6 +318,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             spend_real_m = np.where(seg >= 0, amts[np.maximum(seg, 0)], 0.0)
         else:
             spend_real_m = np.full(n_months, (w.amount or w.rate * cfg.initial) / 12.0)
+        if w.decline:
+            past = np.maximum(np.arange(n_months) - w.decline_start_month, 0) / 12.0
+            spend_real_m = spend_real_m * (1.0 - w.decline) ** past
     elif w.kind == "percent_of_balance":
         monthly_withdrawal = np.full(n_paths, cfg.initial * w.rate / 12.0)
     elif w.kind != "none":

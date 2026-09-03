@@ -157,3 +157,10 @@ def test_main_reports_config_errors(tmp_path, capsys):
     bad = write(tmp_path, "[withdrawl]\namount = 4\n")
     assert main(["run", "--config", bad]) == 2
     assert "did you mean" in capsys.readouterr().out
+
+
+def test_decline_number_and_table_forms(tmp_path):
+    text = "[withdrawal]\namount = '4%'\ndecline = 1.5\n"
+    assert load_config(write(tmp_path, text))["spend_decline"] == "1.5"
+    text = "[withdrawal]\namount = '4%'\ndecline = { rate = 1, from = 75 }\n"
+    assert load_config(write(tmp_path, text))["spend_decline"] == "1@75"
