@@ -341,18 +341,18 @@ Real households hold several accounts with different tax treatments. Repeated
 ```toml
 [[account]]
 type = "taxable"
-balance = 12_000_000
+balance = 1_500_000
 cost_basis = 0.6
 allocation = { us_equities = 60, muni_bonds = 35, cash = 5 }
 
 [[account]]
 type = "traditional"        # the 401k/IRA
-balance = 500_000
+balance = 400_000
 allocation = { us_equities = 60, us_bonds_10yr = 35, cash = 5 }
 
 [[account]]
 type = "roth"
-balance = 500_000
+balance = 250_000
 allocation = { us_equities = 60, us_bonds_10yr = 35, cash = 5 }
 ```
 
