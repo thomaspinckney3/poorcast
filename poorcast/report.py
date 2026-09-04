@@ -349,9 +349,14 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         )
     elif result.ladder_annual:
         pricing = "today's curve" if cfg.ladder_curve else f"{cfg.ladder_yield:.2%} real"
+        lyrs = cfg.ladder_years or cfg.years
+        if cfg.ladder_curve and lyrs > max(cfg.ladder_curve):
+            pricing += (
+                f", tail {'bridge-locked at 30y forwards' if cfg.ladder_tail_yield is None else f'rolled at {cfg.ladder_tail_yield:.2%}'}"
+            )
         wd += (
             f" · TIPS rungs paying ${result.ladder_annual:,.0f}/yr "
-            f"({cfg.ladder_years or cfg.years}y at {pricing})"
+            f"({lyrs}y at {pricing})"
         )
     kinds_present = (
         {a.kind for a in cfg.accounts} if cfg.accounts else {cfg.account}

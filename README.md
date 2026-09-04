@@ -204,6 +204,14 @@ Taxation follows the holding account: taxable = phantom income; traditional
 the rungs' value too); Roth = free. Not combinable with `--tips-ladder`,
 glidepaths, or 529 accounts.
 
+Rungs beyond the curve's 30-year point cannot be bought today; **the default
+assumes they are bridged** — extra 30-year TIPS held (duration-scaled) and
+rolled into the long rungs as those maturities are auctioned — which locks
+approximately today's forward real rates. `--tips-ladder-tail PCT` (or
+`tail_yield` in `[tips_ladder]`) prices the tail at an assumed future roll
+yield instead, for the unbridged case (the 2010–26 DFII30 median ≈ 1.0 is
+the conservative bracket).
+
 **"What if I had retired in 1968?"** — instead of resampling, run every actual
 historical start month as one path:
 
