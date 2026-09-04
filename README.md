@@ -323,6 +323,13 @@ How it behaves:
   approximation.
 - **Asset location works**: each account holds its own allocation (munis in
   taxable, Treasuries in tax-advantaged, as above), rebalanced independently.
+- **Early withdrawals are penalized**: draws before age 59½ from a
+  traditional account, or from a Roth beyond its contribution basis (the
+  account's `cost_basis` × balance), incur the 10% penalty, settled annually
+  (on by default when `--age` is given; `--no-early-penalty` or
+  `early_penalty = false` under `[taxes]` disables it; 529s are assumed
+  qualified). Ordinary tax on early Roth earnings is not modeled — only the
+  penalty.
 - The report adds median terminal wealth per account; success still means
   the *household* never depleted (every account empty).
 

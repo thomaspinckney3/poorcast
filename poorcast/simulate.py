@@ -76,6 +76,9 @@ class Account:
     kind: str
     balance: float
     allocation: dict[str, float] | None = None
+    # taxable: starting cost basis as a fraction of balance. roth: the
+    # contribution basis - draws up to it are penalty-free before 59.5,
+    # draws beyond it are earnings (default 1.0 = all contributions).
     cost_basis: float = 1.0
 
 
@@ -146,6 +149,13 @@ class SimConfig:
     accounts: tuple[Account, ...] | None = None
     withdraw_order: tuple[str, ...] | None = None  # default taxable->traditional->roth->529
     age: int | None = None  # age at t=0; enables age-based features (RMDs)
+    # 10% early-withdrawal penalty before age 59.5 (needs `age`): applies to
+    # traditional draws and to the earnings portion of roth draws (beyond the
+    # account's cost_basis x balance of contributions); 529s are assumed
+    # qualified. Settled annually, paid from the taxable account when there
+    # is one (the payment is not itself a distribution). Ordinary income tax
+    # on early roth earnings is NOT modeled - only the penalty.
+    early_penalty: bool = True
     # Income streams outside the portfolio (Social Security, pensions).
     income: tuple[IncomeStream, ...] | None = None
     # One-time real expenses: (month index, today's dollars) - a roof, a car.
@@ -491,6 +501,17 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     dist_acc = np.zeros(n_paths)
     other_ord_acc = np.zeros(n_paths)  # taxable outside income since last settlement
     year_start_bal = np.full(n_paths, initial_total)
+    # 10% penalty on early (pre-59.5) retirement-account draws: traditional
+    # draws, and roth draws beyond the contribution basis.
+    pen_cut = 0
+    if cfg.early_penalty and cfg.age is not None:
+        pen_cut = min(max(int(round((59.5 - cfg.age) * 12)), 0), n_months)
+    roth_idx = [i for i, k in enumerate(kinds) if k == "roth"]
+    pen_active = pen_cut > 0 and (trad or roth_idx)
+    penalty_acc = np.zeros(n_paths)
+    roth_basis = {
+        i: np.full(n_paths, specs[i].balance * specs[i].cost_basis) for i in roth_idx
+    }
     if taxed:
         from .data import INCOME_CLASS
 
@@ -610,6 +631,13 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             remaining = remaining - take
         if trad:
             dist_acc += draws[trad_i]
+        if pen_active and m < pen_cut:
+            if trad:
+                penalty_acc += 0.10 * draws[trad_i]
+            for ri in roth_idx:
+                from_basis = np.minimum(draws[ri], roth_basis[ri])
+                roth_basis[ri] = roth_basis[ri] - from_basis
+                penalty_acc += 0.10 * (draws[ri] - from_basis)
 
         wd_to_sell = draws
         if taxed:
@@ -808,6 +836,25 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 scale_t = np.where(total_p > 0, (total_p - tax) / total_p, 1.0)
             acct.holdings *= scale_t[:, None]
             dist_acc = tax.copy()  # paying the tax is itself a distribution
+
+        # Early-withdrawal penalties settle annually, paid from the taxable
+        # account first, then the others; the payment is not a distribution.
+        if pen_active and annual and penalty_acc.any():
+            due = penalty_acc
+            penalty_acc = np.zeros(n_paths)
+            pay_order = ([tax_i] if tax_i is not None else []) + [
+                i for i in draw_order if i != tax_i
+            ]
+            paid = np.zeros(n_paths)
+            for i in pay_order:
+                tot = accts[i].holdings.sum(axis=1)
+                pay = np.minimum(due, tot)
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    scale_p = np.where(tot > 0, (tot - pay) / tot, 1.0)
+                prorata_flow(accts[i], scale_p)
+                due = due - pay
+                paid = paid + pay
+            total_tax_real += paid / cum_inflation[:, m + 1]
 
         tot_end = accts[0].holdings.sum(axis=1)
         for acct in accts[1:]:

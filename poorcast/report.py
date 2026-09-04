@@ -336,6 +336,16 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             f" · TIPS ladder floor ${lad.annual:,.0f}/yr "
             f"({lad.years}y at {lad.real_yield:.2%} real, cost ${lad.cost:,.0f}, {acct})"
         )
+    kinds_present = (
+        {a.kind for a in cfg.accounts} if cfg.accounts else {cfg.account}
+    )
+    if (
+        cfg.early_penalty
+        and cfg.age is not None
+        and cfg.age < 59.5
+        and kinds_present & {"traditional", "roth"}
+    ):
+        wd += " · 10% penalty on early retirement-account draws (pre-59½)"
     mode = (
         f"{result.n_paths:,} bootstrap paths (block={cfg.block_months}mo)"
         if cfg.mode == "bootstrap"

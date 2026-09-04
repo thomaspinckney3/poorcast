@@ -301,6 +301,13 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "from both levels). 0 to disable",
     )
     r.add_argument(
+        "--no-early-penalty",
+        action="store_true",
+        help="skip the 10%% early-withdrawal penalty modeled on pre-59.5 "
+        "traditional draws and roth earnings draws (on by default when "
+        "--age is given)",
+    )
+    r.add_argument(
         "--tax-deferred",
         action="store_true",
         help="alias for --account roth: no taxes modeled (use --account "
@@ -631,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
             ladder=ladder,
             account=args.account,
             age=args.age,
+            early_penalty=not args.no_early_penalty,
             income=tuple(streams) or None,
             expenses=tuple(expenses) or None,
             tax_rate=0.0 if no_tax else args.tax_rate / 100.0,

@@ -168,3 +168,76 @@ def test_validation_rejects_bad_household():
     with pytest.raises(ValueError, match="single-account"):
         simulate(panel, cfg(accounts=(Account("roth", 1.0),),
                             allocation_end={"a": 1.0}))
+
+
+# --- early-withdrawal penalty -----------------------------------------------
+
+
+def test_early_traditional_draws_penalized():
+    panel = make_panel()
+    c = cfg(
+        age=50,
+        accounts=(Account("traditional", 1000.0),),
+        tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=120.0),
+    )
+    r = simulate(panel, c)
+    # 120 distributed: 25% ordinary tax (30) + 10% penalty (12).
+    assert np.allclose(r.balance[:, -1], 1000.0 - 120.0 - 30.0 - 12.0)
+    assert np.allclose(r.total_tax_real, 42.0)
+
+
+def test_penalty_stops_at_59_and_a_half():
+    panel = make_panel()
+    c = cfg(
+        age=59,
+        accounts=(Account("traditional", 1000.0),),
+        tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=120.0),
+    )
+    r = simulate(panel, c)
+    # Only the first 6 months are pre-59.5: penalty 0.10 * 60 = 6.
+    assert np.allclose(r.total_tax_real, 30.0 + 6.0)
+
+
+def test_roth_contribution_basis_comes_out_free():
+    panel = make_panel()
+    c = cfg(
+        years=2,
+        age=50,
+        accounts=(Account("roth", 1000.0, cost_basis=0.4),),
+        withdrawal=Withdrawal("fixed_real", amount=240.0),
+    )
+    r = simulate(panel, c)
+    # 20/mo: months 0-19 spend the 400 of contributions free; months 20-23
+    # are earnings draws -> penalty 0.10 * 80 = 8, charged at year-2 end.
+    assert np.allclose(r.balance[:, 12], 1000.0 - 240.0)  # year 1 penalty-free
+    assert np.allclose(r.balance[:, -1], 1000.0 - 480.0 - 8.0)
+    assert np.allclose(r.total_tax_real, 8.0)
+
+
+def test_no_early_penalty_flag_and_529_exempt():
+    panel = make_panel()
+    base = dict(age=50, withdrawal=Withdrawal("fixed_real", amount=120.0))
+    off = simulate(panel, cfg(
+        accounts=(Account("roth", 1000.0, cost_basis=0.0),),
+        early_penalty=False, **base))
+    assert np.allclose(off.total_tax_real, 0.0)
+    edu = simulate(panel, cfg(accounts=(Account("529", 1000.0),), **base))
+    assert np.allclose(edu.total_tax_real, 0.0)
+
+
+def test_penalty_paid_from_taxable_when_present():
+    panel = make_panel()
+    c = cfg(
+        age=50,
+        accounts=(Account("taxable", 500.0), Account("traditional", 1000.0)),
+        withdraw_order=("traditional", "taxable"),
+        tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=120.0),
+    )
+    r = simulate(panel, c)
+    # Traditional pays the 120 draw + 30 ordinary tax; the 12 penalty comes
+    # from the taxable account.
+    assert np.allclose(r.account_terminal[:, 0], 500.0 - 12.0)
+    assert np.allclose(r.account_terminal[:, 1], 1000.0 - 120.0 - 30.0)

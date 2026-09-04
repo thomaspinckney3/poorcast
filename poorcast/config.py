@@ -261,9 +261,13 @@ def load_config(path: str) -> dict:
     if "taxes" in raw:
         t = raw["taxes"]
         _reject_unknown(
-            t, {"account", "filing", "state", "cost_basis", "rate", "ordinary"},
+            t,
+            {"account", "filing", "state", "cost_basis", "rate", "ordinary",
+             "early_penalty"},
             "[taxes]",
         )
+        if "early_penalty" in t:
+            out["no_early_penalty"] = not _bool(t["early_penalty"], "taxes.early_penalty")
         if "account" in t:
             out["account"] = _str(
                 t["account"], "taxes.account",
