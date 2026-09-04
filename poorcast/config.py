@@ -135,7 +135,7 @@ TOP_KEYS = {
     "age", "initial", "horizons", "contribute", "optimize", "fees",
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
     "taxes", "tips_ladder", "simulation", "output",
-    "account", "withdraw_order", "adjustments",
+    "account", "withdraw_order", "adjustments", "pe_path",
 }
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 
@@ -171,6 +171,28 @@ def load_config(path: str) -> dict:
 
     if "allocation" in raw:
         out["allocation"] = _allocation(raw["allocation"], "allocation")
+
+    # Assumed P/E valuation path for US equities, e.g.
+    # pe_path = [{year = 0, pe = 30}, {year = 10, pe = 20}, {year = 40, pe = 30}]
+    if "pe_path" in raw:
+        pts = raw["pe_path"]
+        if not isinstance(pts, list) or len(pts) < 2:
+            raise ConfigError(
+                "pe_path must be an array of at least two {year, pe} points"
+            )
+        parts = []
+        for i, p in enumerate(pts):
+            where = f"pe_path[{i}]"
+            if not isinstance(p, dict):
+                raise ConfigError(f"{where} must be a table like {{year = 10, pe = 20}}")
+            _reject_unknown(p, {"year", "pe"}, where)
+            for key in ("year", "pe"):
+                if key not in p:
+                    raise ConfigError(f"{where} needs `{key}`")
+            parts.append(
+                f"{_num(p['pe'], where + '.pe'):g}@{_num(p['year'], where + '.year'):g}"
+            )
+        out["pe_path"] = ",".join(parts)
 
     # Per-asset annual return adjustments in %/yr (e.g. anchoring bond
     # returns at today's yields): [adjustments] us_bonds_10yr = -1.1

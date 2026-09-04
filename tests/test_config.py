@@ -192,3 +192,18 @@ def test_adjustments_table_parses(tmp_path):
     text = "[adjustments]\nus_bonds_10yr = -1.1\nmuni_bonds = -1.8\n"
     out = load_config(write(tmp_path, text))
     assert out["adjust"] == {"us_bonds_10yr": -1.1, "muni_bonds": -1.8}
+
+
+def test_pe_path_parses_and_builds_rates(tmp_path):
+    import numpy as np
+    from poorcast.cli import parse_pe_path, pe_path_rates
+
+    text = "pe_path = [{year = 0, pe = 30}, {year = 10, pe = 20}, {year = 40, pe = 30}]\n"
+    out = load_config(write(tmp_path, text))
+    assert out["pe_path"] == "30@0,20@10,30@40"
+    pts = parse_pe_path(out["pe_path"])
+    rates = pe_path_rates(pts, 480)
+    assert np.allclose(rates[:120], np.log(20 / 30) / 10)
+    assert np.allclose(rates[120:], np.log(30 / 20) / 30)
+    # cumulative log-PE change is exactly zero over the round trip
+    assert abs(rates.sum() / 12) < 1e-12

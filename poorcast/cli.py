@@ -117,6 +117,35 @@ def parse_schedule(text: str, age: int, initial: float) -> tuple[tuple[int, floa
     return tuple(sched)
 
 
+def parse_pe_path(text: str) -> list[tuple[float, float]]:
+    """'30@0,20@10,30@40' -> [(year, pe), ...] sorted, validated."""
+    points = []
+    for part in text.split(","):
+        pe_s, yr_s = part.split("@", 1)
+        pe, yr = float(pe_s), float(yr_s)
+        if pe <= 0 or yr < 0:
+            raise ValueError(f"bad P/E path point {part!r}")
+        points.append((yr, pe))
+    points.sort()
+    if len(points) < 2:
+        raise ValueError("a P/E path needs at least two PE@YEAR points")
+    if any(b[0] <= a[0] for a, b in zip(points, points[1:])):
+        raise ValueError("P/E path years must be strictly increasing")
+    return points
+
+
+def pe_path_rates(points: list[tuple[float, float]], n_months: int):
+    """Per-month annual multiple-expansion rates: piecewise-linear in log-P/E
+    between points, flat (0) before the first and after the last."""
+    import numpy as np
+
+    rates = np.zeros(n_months)
+    for (y0, p0), (y1, p1) in zip(points, points[1:]):
+        m0, m1 = int(round(y0 * 12)), int(round(y1 * 12))
+        rates[m0:min(m1, n_months)] = np.log(p1 / p0) / ((m1 - m0) / 12.0)
+    return rates
+
+
 def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="poorcast",
@@ -381,6 +410,16 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "negative models multiple compression. Default: leave history as is",
     )
     r.add_argument(
+        "--pe-path",
+        default=None,
+        metavar="PE@YEAR,...",
+        help="assumed P/E valuation path for US equities, e.g. "
+        "'30@0,20@10,30@40': piecewise-linear in log-P/E (constant multiple "
+        "expansion per segment, relative to the historical rate), held flat "
+        "after the last point. Years are from the start of the simulation. "
+        "Mutually exclusive with --multiple-expansion",
+    )
+    r.add_argument(
         "--adjust",
         default=None,
         metavar="ASSET=PCT,...",
@@ -511,7 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     return_adjustments = None
-    if args.multiple_expansion is not None:
+    if args.multiple_expansion is not None and args.pe_path is None:
         from .decompose import equity_return_decomposition
 
         hist = equity_return_decomposition()["multiple_expansion"]
@@ -537,6 +576,24 @@ def main(argv: list[str] | None = None) -> int:
         return_adjustments = dict(return_adjustments or {})
         for k, v in extra.items():
             return_adjustments[k] = return_adjustments.get(k, 0.0) + v
+    pe_points = None
+    hist_me = 0.0
+    if args.pe_path is not None:
+        if args.multiple_expansion is not None:
+            print("note: --pe-path supersedes the multiple-expansion setting")
+        try:
+            pe_points = parse_pe_path(args.pe_path)
+        except ValueError as e:
+            print(f"error: {e}")
+            return 2
+        from .decompose import equity_return_decomposition
+
+        hist_me = equity_return_decomposition()["multiple_expansion"]
+        pes = " -> ".join(f"{p:g} at year {y:g}" for y, p in pe_points)
+        print(
+            f"P/E path: {pes} (vs historical multiple expansion "
+            f"{hist_me * 100:+.2f}%/yr)"
+        )
 
     # Account type and age-based features.
     if accounts is not None:
@@ -679,6 +736,12 @@ def main(argv: list[str] | None = None) -> int:
             run_withdrawal = replace(
                 withdrawal, rate=0.0, amount=max(target - ladder.annual, 0.0)
             )
+        run_adjustments = return_adjustments
+        if pe_points:
+            arr = pe_path_rates(pe_points, years * 12) - hist_me
+            run_adjustments = dict(return_adjustments or {})
+            for a in ("us_equities", "us_small_cap"):
+                run_adjustments[a] = run_adjustments.get(a, 0.0) + arr
         cfg = SimConfig(
             allocation=(
                 args.allocation
@@ -717,7 +780,7 @@ def main(argv: list[str] | None = None) -> int:
             cost_basis_start=args.cost_basis,
             rebalance_months=args.rebalance,
             state_tax=0.0 if strip_tax else args.state_tax / 100.0,
-            return_adjustments=return_adjustments,
+            return_adjustments=run_adjustments,
             fee_annual=args.fees / 100.0,
             contribution_monthly=args.contribute,
             block_months=args.block,
