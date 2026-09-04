@@ -185,7 +185,9 @@ def load_config(path: str) -> dict:
             where = f"[[account]] #{i + 1}"
             if not isinstance(e, dict):
                 raise ConfigError(f"{where} must be a table")
-            _reject_unknown(e, {"type", "balance", "allocation", "cost_basis"}, where)
+            _reject_unknown(
+                e, {"type", "balance", "allocation", "cost_basis", "schedule"}, where
+            )
             for key in ("type", "balance"):
                 if key not in e:
                     raise ConfigError(f"{where} needs `{key}`")
@@ -197,6 +199,9 @@ def load_config(path: str) -> dict:
                 acct["allocation"] = _allocation(e["allocation"], f"{where}.allocation")
             if "cost_basis" in e:
                 acct["cost_basis"] = _num(e["cost_basis"], f"{where}.cost_basis")
+            if "schedule" in e:
+                # Kept as CLI schedule text; the CLI resolves ages via --age.
+                acct["schedule"] = _schedule_text(e["schedule"], f"{where}.schedule")
             accounts.append(acct)
         out["accounts"] = accounts
     if "withdraw_order" in raw:

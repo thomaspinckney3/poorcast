@@ -301,3 +301,66 @@ def test_single_account_529_stays_qualified():
     r = simulate(panel, c)
     assert np.allclose(r.total_tax_real, 0.0)
     assert np.allclose(r.balance[:, -1], 1000.0 - 240.0)
+
+
+# --- per-account draw schedules ----------------------------------------------
+
+
+def test_scheduled_529_draws_are_qualified():
+    panel = make_panel()
+    c = cfg(
+        accounts=(
+            Account("taxable", 1000.0),
+            Account("529", 1000.0, cost_basis=0.5, schedule=((0, 240.0),)),
+        ),
+        tax_ordinary=0.25,
+    )
+    r = simulate(panel, c)
+    # Tuition comes from the 529 tax- and penalty-free; taxable untouched.
+    assert np.allclose(r.account_terminal[:, 1], 1000.0 - 240.0)
+    assert np.allclose(r.account_terminal[:, 0], 1000.0)
+    assert np.allclose(r.total_tax_real, 0.0)
+
+
+def test_schedule_shortfall_falls_to_waterfall():
+    panel = make_panel()
+    c = cfg(
+        accounts=(
+            Account("taxable", 1000.0),
+            Account("529", 60.0, schedule=((0, 240.0),)),
+        ),
+    )
+    r = simulate(panel, c)
+    # 20/mo tuition: the 529 covers months 0-2, then the taxable account pays.
+    assert np.allclose(r.account_terminal[:, 1], 0.0)
+    assert np.allclose(r.account_terminal[:, 0], 1000.0 - 180.0)
+    assert np.allclose(r.total_withdrawn, 240.0)
+
+
+def test_scheduled_qualified_and_waterfall_nonqualified_split():
+    panel = make_panel()
+    c = cfg(
+        accounts=(Account("529", 1000.0, cost_basis=0.5, schedule=((0, 120.0),)),),
+        withdrawal=Withdrawal("fixed_real", amount=120.0),
+    )
+    r = simulate(panel, c)
+    # 10/mo scheduled (qualified) + 10/mo household draw (non-qualified,
+    # 50% earnings -> penalty 0.10 * 60 = 6; no tax regime, penalty only).
+    assert np.allclose(r.total_tax_real, 6.0)
+    assert np.allclose(r.balance[:, -1], 1000.0 - 240.0 - 6.0)
+
+
+def test_scheduled_traditional_draws_are_distributions():
+    panel = make_panel()
+    c = cfg(
+        age=60,
+        accounts=(Account("taxable", 1000.0),
+                  Account("traditional", 1000.0, schedule=((0, 120.0),))),
+        tax_ordinary=0.25,
+    )
+    r = simulate(panel, c)
+    # 120 scheduled from the IRA -> ordinary tax 30, withheld from the IRA
+    # (flat-rate settlements pay from the IRA, like custodian withholding).
+    assert np.allclose(r.account_terminal[:, 1], 1000.0 - 120.0 - 30.0)
+    assert np.allclose(r.account_terminal[:, 0], 1000.0)
+    assert np.allclose(r.total_tax_real, 30.0)

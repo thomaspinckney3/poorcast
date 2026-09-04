@@ -464,7 +464,21 @@ def main(argv: list[str] | None = None) -> int:
     # Multi-account household (config-file [[account]] sections only).
     accounts = None
     if getattr(args, "accounts", None):
-        accounts = tuple(Account(**a) for a in args.accounts)
+        specs = []
+        for a in args.accounts:
+            a = dict(a)
+            sched_text = a.pop("schedule", None)
+            if sched_text is not None:
+                if args.age is None:
+                    print("error: account schedules need --age (ages anchor them)")
+                    return 2
+                try:
+                    a["schedule"] = parse_schedule(sched_text, args.age, a["balance"])
+                except ValueError as e:
+                    print(f"error: {e}")
+                    return 2
+            specs.append(Account(**a))
+        accounts = tuple(specs)
         for flag, val in [("--optimize", args.optimize),
                           ("--glide-to", args.glide_to is not None),
                           ("--tips-ladder", args.tips_ladder is not None)]:

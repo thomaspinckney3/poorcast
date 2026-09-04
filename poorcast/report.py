@@ -251,12 +251,24 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
     def _alloc_str(alloc_dict):
         return ", ".join(f"{int(round(v * 100))}% {k}" for k, v in alloc_dict.items())
 
+    def _when(start_month: int) -> str:
+        if start_month <= 0:
+            return "start"
+        if cfg.age is not None:
+            return f"age {cfg.age + start_month // 12}"
+        return f"year {start_month // 12}"
+
     if cfg.accounts:
         parts_a = []
         for a in cfg.accounts:
             desc = f"${a.balance:,.0f} {a.kind}"
             if a.allocation:
                 desc += f" ({_alloc_str(a.allocation)})"
+            if a.schedule:
+                steps = ", ".join(
+                    f"${amt:,.0f}/yr from {_when(sm)}" for sm, amt in a.schedule if amt
+                )
+                desc += f" drawing {steps}"
             parts_a.append(desc)
         alloc = " + ".join(parts_a)
         order = cfg.withdraw_order or DEFAULT_WITHDRAW_ORDER
@@ -268,13 +280,6 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         end = ", ".join(f"{int(round(v * 100))}% {k}" for k, v in cfg.allocation_end.items())
         span = f"{cfg.glide_years}y" if cfg.glide_years else "full horizon"
         alloc = f"{alloc} gliding to {end} over {span}"
-    def _when(start_month: int) -> str:
-        if start_month <= 0:
-            return "start"
-        if cfg.age is not None:
-            return f"age {cfg.age + start_month // 12}"
-        return f"year {start_month // 12}"
-
     w = cfg.withdrawal
     if w.kind == "fixed_real":
         if w.schedule:
@@ -347,7 +352,7 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
     ):
         wd += " · 10% penalty on early retirement-account draws (pre-59½)"
     if cfg.accounts and "529" in kinds_present:
-        wd += " · 529 draws non-qualified (earnings taxed + 10%)"
+        wd += " · unscheduled 529 draws non-qualified (earnings taxed + 10%)"
     mode = (
         f"{result.n_paths:,} bootstrap paths (block={cfg.block_months}mo)"
         if cfg.mode == "bootstrap"

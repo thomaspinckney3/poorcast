@@ -82,6 +82,14 @@ class Account:
     # 529 (multi-account mode): the contribution fraction for the pro-rata
     # earnings/basis split on non-qualified draws.
     cost_basis: float = 1.0
+    # This account's own draw schedule: (start_month, annual real dollars)
+    # steps, drawn from this account each month ON TOP of the household
+    # withdrawal policy (which is never flexed/declined into it). A 529's
+    # scheduled draws are QUALIFIED (tuition): tax- and penalty-free.
+    # Scheduled traditional/roth draws are taxed/penalized like any other
+    # draw from that account. If the account can't cover its schedule, the
+    # shortfall falls back to the household waterfall.
+    schedule: tuple[tuple[int, float], ...] | None = None
 
 
 @dataclass
@@ -281,6 +289,18 @@ def total_initial(cfg: SimConfig) -> float:
     return cfg.initial
 
 
+def _schedule_array(
+    schedule, n_months: int, what: str = "withdrawal schedule"
+) -> np.ndarray:
+    """(start_month, annual real dollars) steps -> per-month real amounts."""
+    starts = np.array([s for s, _ in schedule], dtype=int)
+    amts = np.array([a for _, a in schedule], dtype=float) / 12.0
+    if starts[0] < 0 or (np.diff(starts) <= 0).any():
+        raise ValueError(f"{what} months must be increasing and >= 0")
+    seg = np.searchsorted(starts, np.arange(n_months), side="right") - 1
+    return np.where(seg >= 0, amts[np.maximum(seg, 0)], 0.0)
+
+
 def _weight_vec(alloc: dict[str, float], assets: list[str], label: str) -> np.ndarray:
     w = np.array([alloc.get(a, 0.0) for a in assets], dtype=float)
     if abs(w.sum() - 1.0) > 1e-6:
@@ -441,12 +461,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     if w.kind == "fixed_real":
         # Per-month real spending target: constant, or a step schedule.
         if w.schedule:
-            starts = np.array([s for s, _ in w.schedule], dtype=int)
-            amts = np.array([a for _, a in w.schedule], dtype=float) / 12.0
-            if starts[0] < 0 or (np.diff(starts) <= 0).any():
-                raise ValueError("withdrawal schedule months must be increasing and >= 0")
-            seg = np.searchsorted(starts, np.arange(n_months), side="right") - 1
-            spend_real_m = np.where(seg >= 0, amts[np.maximum(seg, 0)], 0.0)
+            spend_real_m = _schedule_array(w.schedule, n_months)
         else:
             spend_real_m = np.full(n_months, (w.amount or w.rate * initial_total) / 12.0)
         if w.decline:
@@ -523,6 +538,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     q529_idx = [i for i, k in enumerate(kinds) if k == "529"] if multi else []
     q529_basis = {
         i: np.full(n_paths, specs[i].balance * specs[i].cost_basis) for i in q529_idx
+    }
+    # Per-account draw schedules (multi-account mode): drawn from the owning
+    # account before the household waterfall; shortfalls fall back to it.
+    sched_idx = [i for i, s in enumerate(specs) if s.schedule] if multi else []
+    has_acct_sched = bool(sched_idx)
+    acct_sched_real = {
+        i: _schedule_array(specs[i].schedule, n_months, f"account #{i + 1} schedule")
+        for i in sched_idx
     }
     if taxed:
         from .data import INCOME_CLASS
@@ -617,6 +640,19 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             spend = monthly_withdrawal.copy()
         else:
             spend = np.zeros(n_paths)
+        # Account draw schedules: taken from the owning account itself; any
+        # shortfall joins the household spending need below.
+        pre_total = 0.0
+        pre_draws: dict = {}
+        if has_acct_sched:
+            short = np.zeros(n_paths)
+            for i in sched_idx:
+                need = acct_sched_real[i][m] * cum_inflation[:, m]
+                take = np.minimum(need, totals[i])
+                pre_draws[i] = take
+                short += need - take
+                pre_total = pre_total + take
+            spend = spend + short
         # One-time expenses add to the need; outside income offsets it. A
         # surplus (income above spending) is invested like a contribution.
         income_invested = 0.0
@@ -628,9 +664,13 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             )
             income_invested = np.maximum(-net, 0.0)
             spend = np.maximum(net, 0.0)
-        wd = np.where(alive, np.minimum(spend, total), 0.0)
+        cap = total if not has_acct_sched else total - pre_total
+        wd = np.where(alive, np.minimum(spend, cap), 0.0)
         total_withdrawn += wd
         total_withdrawn_real += wd / cum_inflation[:, m]
+        if has_acct_sched:
+            total_withdrawn += pre_total
+            total_withdrawn_real += pre_total / cum_inflation[:, m]
         if taxed or trad:
             other_ord_acc += income_taxed_real_m[m] * cum_inflation[:, m]
 
@@ -638,9 +678,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         draws: list = [None] * len(accts)
         remaining = wd
         for i in draw_order:
-            take = np.minimum(remaining, totals[i])
+            avail = totals[i] if not has_acct_sched else totals[i] - pre_draws.get(i, 0.0)
+            take = np.minimum(remaining, avail)
             draws[i] = take
             remaining = remaining - take
+        if has_acct_sched:
+            wf_529 = {qi: draws[qi] for qi in q529_idx}  # non-qualified portion
+            for i in sched_idx:
+                draws[i] = draws[i] + pre_draws[i]
         if trad:
             dist_acc += draws[trad_i]
         if pen_active and m < pen_cut:
@@ -659,7 +704,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 )
             from_basis = draws[qi] * basis_frac
             q529_basis[qi] = np.maximum(q529_basis[qi] - from_basis, 0.0)
-            earnings = draws[qi] - from_basis
+            # Scheduled (tuition) draws are qualified; only the waterfall
+            # portion is non-qualified and taxed/penalized on its earnings.
+            nq = wf_529[qi] if has_acct_sched else draws[qi]
+            earnings = nq - nq * basis_frac
             penalty_acc += 0.10 * earnings
             if taxed or trad:
                 other_ord_acc += earnings
