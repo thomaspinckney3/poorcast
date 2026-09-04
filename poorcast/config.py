@@ -135,7 +135,7 @@ TOP_KEYS = {
     "age", "initial", "horizons", "contribute", "optimize", "fees",
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
     "taxes", "tips_ladder", "simulation", "output",
-    "account", "withdraw_order",
+    "account", "withdraw_order", "adjustments",
 }
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 
@@ -171,6 +171,14 @@ def load_config(path: str) -> dict:
 
     if "allocation" in raw:
         out["allocation"] = _allocation(raw["allocation"], "allocation")
+
+    # Per-asset annual return adjustments in %/yr (e.g. anchoring bond
+    # returns at today's yields): [adjustments] us_bonds_10yr = -1.1
+    if "adjustments" in raw:
+        adj = raw["adjustments"]
+        if not isinstance(adj, dict) or not adj:
+            raise ConfigError("[adjustments] must be a table of asset = percent/yr")
+        out["adjust"] = {k: _num(v, f"adjustments.{k}") for k, v in adj.items()}
 
     # Multi-account household: repeated [[account]] sections.
     if "account" in raw:

@@ -381,6 +381,16 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "negative models multiple compression. Default: leave history as is",
     )
     r.add_argument(
+        "--adjust",
+        default=None,
+        metavar="ASSET=PCT,...",
+        help="additive annual return adjustment per asset (%%/yr), e.g. "
+        "us_bonds_10yr=-1.1,muni_bonds=-1.8 to anchor bond returns at "
+        "today's yields instead of the sampled-history average (which "
+        "includes the 1982-2020 yield decline). Stacks with "
+        "--multiple-expansion",
+    )
+    r.add_argument(
         "--rebalance",
         type=int,
         default=3,
@@ -512,6 +522,21 @@ def main(argv: list[str] | None = None) -> int:
             f"historical {hist * 100:+.2f}%/yr -> US equity returns adjusted "
             f"{delta * 100:+.2f}%/yr"
         )
+    if args.adjust:
+        try:
+            if isinstance(args.adjust, dict):  # from a config [adjustments] table
+                extra = {k: float(v) / 100.0 for k, v in args.adjust.items()}
+            else:
+                extra = {
+                    k.strip(): float(v) / 100.0
+                    for k, v in (pair.split("=", 1) for pair in args.adjust.split(","))
+                }
+        except ValueError:
+            print(f"error: bad --adjust entry in {args.adjust!r}; expected ASSET=PCT,...")
+            return 2
+        return_adjustments = dict(return_adjustments or {})
+        for k, v in extra.items():
+            return_adjustments[k] = return_adjustments.get(k, 0.0) + v
 
     # Account type and age-based features.
     if accounts is not None:

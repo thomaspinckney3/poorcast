@@ -186,3 +186,9 @@ def test_account_sections_parse(tmp_path):
     assert out["accounts"][1] == {"kind": "roth", "balance": 500_000}
     with pytest.raises(ConfigError, match="balance"):
         load_config(write(tmp_path, "[[account]]\ntype = 'roth'\n"))
+
+
+def test_adjustments_table_parses(tmp_path):
+    text = "[adjustments]\nus_bonds_10yr = -1.1\nmuni_bonds = -1.8\n"
+    out = load_config(write(tmp_path, text))
+    assert out["adjust"] == {"us_bonds_10yr": -1.1, "muni_bonds": -1.8}
