@@ -105,3 +105,148 @@ def optimize(
         key=lambda r: (-r["success"], -r["terminal_p5"], -r["terminal_median"])
     )
     return leaderboard[0]["allocation"], leaderboard
+
+
+# --- household-mode optimization --------------------------------------------
+
+EQUITY_ASSETS = frozenset({"us_equities", "us_small_cap", "intl_equities"})
+LADDER = "tips_ladder"
+
+
+def _buckets(alloc: dict) -> tuple[dict, dict]:
+    eq = {k: v for k, v in alloc.items() if k in EQUITY_ASSETS}
+    de = {k: v for k, v in alloc.items() if k not in EQUITY_ASSETS and k != LADDER}
+    return eq, de
+
+
+def _norm(d: dict) -> dict:
+    s = sum(d.values())
+    return {k: v / s for k, v in d.items()} if s > 0 else {}
+
+
+def household_candidate(accounts, base_alloc, equity: float, ladder_total: float):
+    """Rebuild the accounts for a household equity share and total ladder cost.
+
+    The account structure is fixed; each non-529 account's liquid sleeve is
+    rescaled to `equity` equities / (1 - equity) defensive, preserving its
+    own intra-bucket proportions (falling back to the household's when an
+    account lacks a bucket). Ladder dollars fill traditional accounts first,
+    then taxable (clipped to capacity); 529s are left untouched.
+    """
+    agg_eq: dict = {}
+    agg_de: dict = {}
+    for a in accounts:
+        if a.kind == "529":
+            continue
+        alloc = a.allocation or base_alloc or {}
+        eq, de = _buckets(alloc)
+        for k, v in eq.items():
+            agg_eq[k] = agg_eq.get(k, 0.0) + v * a.balance
+        for k, v in de.items():
+            agg_de[k] = agg_de.get(k, 0.0) + v * a.balance
+    agg_eq, agg_de = _norm(agg_eq), _norm(agg_de)
+
+    remaining = ladder_total
+    assigned: dict[int, float] = {}
+    for kind in ("traditional", "taxable"):
+        for i, a in enumerate(accounts):
+            if a.kind == kind:
+                take = min(remaining, a.balance)
+                assigned[i] = take
+                remaining -= take
+
+    out = []
+    for i, a in enumerate(accounts):
+        if a.kind == "529":
+            out.append(a)
+            continue
+        alloc = a.allocation or base_alloc or {}
+        eqp = _norm(_buckets(alloc)[0]) or agg_eq
+        dep = _norm(_buckets(alloc)[1]) or agg_de
+        wl = assigned.get(i, 0.0) / a.balance
+        liquid = 1.0 - wl
+        new: dict = {}
+        for k, v in eqp.items():
+            new[k] = new.get(k, 0.0) + liquid * equity * v
+        for k, v in dep.items():
+            new[k] = new.get(k, 0.0) + liquid * (1.0 - equity) * v
+        new = {k: v for k, v in new.items() if v > 1e-12}
+        if wl > 1e-12:
+            new[LADDER] = wl
+        out.append(replace(a, allocation=new))
+    return tuple(out)
+
+
+def optimize_household(
+    panel,
+    base,
+    equity_grid=None,
+    ladder_grid=None,
+    screen_sims: int = 4000,
+    refine_seeds: tuple[int, ...] = (42, 7, 123),
+    top_k: int = 5,
+    progress=None,
+):
+    """Search household (equity share x total ladder) candidates.
+
+    Screens the grid with common random numbers, refines the leaders across
+    several seeds, and returns (best account tuple, leaderboard rows sorted
+    by mean success, then p5, then median real terminal wealth).
+    """
+    accounts = base.accounts
+    if equity_grid is None or ladder_grid is None:
+        liq = eqd = 0.0
+        cur_l = 0.0
+        for a in accounts:
+            alloc = a.allocation or base.allocation or {}
+            wl = alloc.get(LADDER, 0.0)
+            cur_l += wl * a.balance
+            if a.kind == "529":
+                continue
+            liq += (1 - wl) * a.balance
+            eqd += sum(v for k, v in alloc.items() if k in EQUITY_ASSETS) * a.balance
+        if equity_grid is None:
+            equity_grid = [eqd / liq if liq > 0 else 0.6]
+        if ladder_grid is None:
+            ladder_grid = [cur_l]
+
+    def stats(r):
+        term = r.real_balance[:, -1]
+        return {
+            "success": r.success_rate,
+            "p5": float(np.percentile(term, 5)),
+            "median": float(np.median(term)),
+            "floor": float(r.ladder_annual or 0.0),
+        }
+
+    rows = []
+    for L in ladder_grid:
+        for e in equity_grid:
+            cand = household_candidate(accounts, base.allocation, e, L)
+            r = simulate(panel, replace(base, accounts=cand, n_sims=screen_sims))
+            s = stats(r)
+            row = {"label": f"ladder ${L / 1e6:g}M · equity {e:.0%}",
+                   "accounts": cand, **s, "success_sd": 0.0}
+            rows.append(row)
+            if progress:
+                progress(f"  {row['label']}: success {s['success']:.1%}, "
+                         f"p5 ${s['p5'] / 1e6:.2f}M, median ${s['median'] / 1e6:.1f}M")
+    rows.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
+
+    refined = []
+    for row in rows[:top_k]:
+        succ, p5s, meds = [], [], []
+        floor = row["floor"]
+        for seed in refine_seeds:
+            r = simulate(panel, replace(base, accounts=row["accounts"], seed=seed))
+            s = stats(r)
+            succ.append(s["success"])
+            p5s.append(s["p5"])
+            meds.append(s["median"])
+        refined.append({
+            "label": row["label"], "accounts": row["accounts"], "floor": floor,
+            "success": float(np.mean(succ)), "success_sd": float(np.std(succ)),
+            "p5": float(np.mean(p5s)), "median": float(np.mean(meds)),
+        })
+    refined.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
+    return refined[0]["accounts"], refined

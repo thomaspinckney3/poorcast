@@ -137,6 +137,7 @@ TOP_KEYS = {
     "taxes", "tips_ladder", "simulation", "output",
     "account", "withdraw_order", "adjustments", "pe_path",
 }
+OPTIMIZE_KEYS = {"equity", "ladder"}
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 
 
@@ -161,7 +162,23 @@ def load_config(path: str) -> dict:
     if "fees" in raw:
         out["fees"] = _num(raw["fees"], "fees")
     if "optimize" in raw:
-        out["optimize"] = _bool(raw["optimize"], "optimize")
+        o = raw["optimize"]
+        if isinstance(o, dict):
+            # Household search space: [optimize] equity/ladder = [min, max, step]
+            _reject_unknown(o, OPTIMIZE_KEYS, "[optimize]")
+            grid = {}
+            for key in OPTIMIZE_KEYS:
+                if key in o:
+                    v = o[key]
+                    if not (isinstance(v, list) and len(v) == 3):
+                        raise ConfigError(f"[optimize] {key} must be [min, max, step]")
+                    grid[key] = [_num(x, f"optimize.{key}") for x in v]
+            if not grid:
+                raise ConfigError("[optimize] needs an equity and/or ladder range")
+            out["optimize_grid"] = grid
+            out["optimize"] = True
+        else:
+            out["optimize"] = _bool(o, "optimize")
     if "horizons" in raw:
         h = raw["horizons"]
         if isinstance(h, list):

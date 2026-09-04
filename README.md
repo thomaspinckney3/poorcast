@@ -370,8 +370,27 @@ How it behaves:
 - The report adds median terminal wealth per account; success still means
   the *household* never depleted (every account empty).
 
-At most one taxable and one traditional account. `--optimize`, glidepaths,
-allocation rules, and `--tips-ladder` remain single-account features for now.
+At most one taxable and one traditional account. Glidepaths, allocation
+rules, and `--tips-ladder` remain single-account features for now.
+
+**Household optimization**: with `[[account]]` sections, `--optimize`
+searches a declared space of (household equity share × total ladder
+dollars), keeping the account structure fixed — each account's liquid
+sleeve is rescaled preserving its own asset proportions, ladder dollars
+fill traditional accounts first then taxable, and 529s are left alone:
+
+```toml
+[optimize]
+equity = [40, 80, 10]                  # min, max, step (%)
+ladder = [0, 4_000_000, 1_000_000]     # min, max, step ($)
+```
+
+Candidates screen under common random numbers, leaders refine across
+several seeds, and the report shows the whole frontier (success ± sd,
+5th-percentile/median terminal, income floor) — ladder size is a
+risk-preference dial, so the tradeoff is the answer. Composes with
+scenario assumptions: `poorcast run --config plan.toml --optimize
+--pe-path "30@0,20@10,30@40"` optimizes under a valuation cycle.
 
 ## Asset classes
 

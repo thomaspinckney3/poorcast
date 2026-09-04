@@ -207,3 +207,13 @@ def test_pe_path_parses_and_builds_rates(tmp_path):
     assert np.allclose(rates[120:], np.log(30 / 20) / 30)
     # cumulative log-PE change is exactly zero over the round trip
     assert abs(rates.sum() / 12) < 1e-12
+
+
+def test_optimize_section_parses(tmp_path):
+    text = "[optimize]\nequity = [40, 80, 10]\nladder = [0, 4_000_000, 1_000_000]\n"
+    out = load_config(write(tmp_path, text))
+    assert out["optimize"] is True
+    assert out["optimize_grid"] == {"equity": [40, 80, 10],
+                                    "ladder": [0, 4_000_000, 1_000_000]}
+    with pytest.raises(ConfigError, match="min, max, step"):
+        load_config(write(tmp_path, "[optimize]\nequity = [40, 80]\n"))

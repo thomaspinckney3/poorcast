@@ -530,13 +530,17 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
             specs.append(Account(**a))
         accounts = tuple(specs)
-        for flag, val in [("--optimize", args.optimize),
-                          ("--glide-to", args.glide_to is not None),
+        for flag, val in [("--glide-to", args.glide_to is not None),
                           ("--tips-ladder", args.tips_ladder is not None)]:
             if val:
                 print(f"error: {flag} is a single-account feature; drop the "
                       "[[account]] sections to use it")
                 return 2
+        if args.optimize and not getattr(args, "optimize_grid", None):
+            print("error: household optimization needs an [optimize] section "
+                  "declaring the search space, e.g. equity = [40, 80, 10] "
+                  "and/or ladder = [0, 4_000_000, 1_000_000]")
+            return 2
         if args.allocation is None and any(a.allocation is None for a in accounts):
             print("error: every [[account]] needs an allocation (or give a "
                   "top-level [allocation])")
@@ -789,7 +793,43 @@ def main(argv: list[str] | None = None) -> int:
             sample_end=args.end,
             seed=args.seed,
         )
-        if args.optimize:
+        if args.optimize and accounts is not None:
+            from dataclasses import replace
+
+            from .optimize import optimize_household
+
+            grid = args.optimize_grid
+            e_vals = L_vals = None
+            if "equity" in grid:
+                lo, hi, st = grid["equity"]
+                e_vals, x = [], lo
+                while x <= hi + st * 1e-9:
+                    e_vals.append(x / 100.0)
+                    x += st
+            if "ladder" in grid:
+                lo, hi, st = grid["ladder"]
+                L_vals, x = [], lo
+                while x <= hi + st * 1e-9:
+                    L_vals.append(x)
+                    x += st
+            n_cand = len(e_vals or [1]) * len(L_vals or [1])
+            print(f"\nSearching household allocations for the {years}-year "
+                  f"horizon ({n_cand} candidates, then refinement)...")
+            best, board = optimize_household(
+                panel, cfg, e_vals, L_vals, progress=lambda s: print(s, flush=True)
+            )
+            print("\nTop candidates (success mean ± sd across seeds · "
+                  "real terminal p5/median · floor):")
+            for row in board:
+                print(
+                    "  %-28s %6.2f%% ± %4.2f · $%.2fM / $%.1fM · $%s/yr"
+                    % (row["label"], row["success"] * 100, row["success_sd"] * 100,
+                       row["p5"] / 1e6, row["median"] / 1e6,
+                       f"{row['floor']:,.0f}")
+                )
+            print(f"Selected: {board[0]['label']}")
+            cfg = replace(cfg, accounts=best)
+        elif args.optimize:
             from dataclasses import replace
 
             from .optimize import optimize
