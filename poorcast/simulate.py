@@ -178,6 +178,10 @@ class SimConfig:
     ladder_yield: float = 0.02
     ladder_curve: dict[int, float] | None = None
     ladder_years: int | None = None
+    # Real yield (decimal) for rungs beyond the curve's longest maturity
+    # (unpurchasable today; rolled into at future yields). None = flat at
+    # the longest observed point (bridge-lock approximation).
+    ladder_tail_yield: float | None = None
     # Valuation-conditioned sampling (bootstrap mode only): block starts are
     # drawn with Gaussian-kernel weights in log-state space, matching each
     # block's historical state (state_series, e.g. Shiller P/E by month) to
@@ -518,9 +522,13 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             cost = wl * s.balance
             tax_flag = kinds[i] == "taxable"
             if cfg.ladder_curve:
-                unit = build_ladder_curve(1.0, lyears, cfg.ladder_curve, taxable=tax_flag)
+                unit = build_ladder_curve(
+                    1.0, lyears, cfg.ladder_curve, taxable=tax_flag,
+                    tail_yield=cfg.ladder_tail_yield,
+                )
                 spec = build_ladder_curve(
-                    cost / unit.cost, lyears, cfg.ladder_curve, taxable=tax_flag
+                    cost / unit.cost, lyears, cfg.ladder_curve, taxable=tax_flag,
+                    tail_yield=cfg.ladder_tail_yield,
                 )
             else:
                 unit = build_ladder(1.0, lyears, cfg.ladder_yield, taxable=tax_flag)

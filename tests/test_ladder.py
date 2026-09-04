@@ -74,3 +74,22 @@ def test_taxable_ladder_income_taxed_in_engine():
     expected = 0.40 * lad_tax.coupon_income_real().sum()
     assert np.allclose(r_tax.total_tax_real, expected, rtol=1e-9)
     assert (r_tax.balance[:, -1] < r_def.balance[:, -1]).all()
+
+
+def test_tail_yield_prices_beyond_curve_rungs():
+    from poorcast.ladder import build_ladder_curve
+
+    import numpy as np
+
+    curve = {5: 0.02, 30: 0.03}
+    base = build_ladder_curve(100.0, 40, curve)
+    capped = build_ladder_curve(100.0, 40, curve, tail_yield=0.01)
+    # The whole ladder re-solves (later coupons offset earlier faces), but
+    # every year must still deliver exactly `annual`, and the low-yield tail
+    # must make the ladder dearer.
+    for spec in (base, capped):
+        f, c = np.array(spec.faces), np.array(spec.coupons)
+        for yr in range(40):
+            assert (c[yr:] * f[yr:]).sum() + f[yr] == pytest.approx(100.0)
+    assert capped.cost > base.cost
+    assert sum(capped.faces[30:]) > sum(base.faces[30:])

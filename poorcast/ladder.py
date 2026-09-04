@@ -74,12 +74,24 @@ def build_ladder(
 
 
 def build_ladder_curve(
-    annual: float, years: int, curve: dict[float, float], taxable: bool = False
+    annual: float,
+    years: int,
+    curve: dict[float, float],
+    taxable: bool = False,
+    tail_yield: float | None = None,
 ) -> LadderSpec:
     """curve: {maturity_years: real_yield} points (e.g. from FRED DFII series),
-    linearly interpolated across rung maturities, flat beyond the endpoints."""
+    linearly interpolated across rung maturities, flat beyond the endpoints.
+
+    tail_yield prices rungs BEYOND the curve's longest maturity (typically
+    30y - such rungs cannot be bought today and must be rolled into later at
+    future long real yields). Default: flat at the longest observed yield,
+    which approximates locking the tail with bridge bonds; a conservative
+    bracket is the historical DFII30 median (~1%)."""
     mats = sorted(curve)
     ys = np.interp(np.arange(1, years + 1), mats, [curve[m] for m in mats])
+    if tail_yield is not None:
+        ys = np.where(np.arange(1, years + 1) > mats[-1], tail_yield, ys)
     return _build(annual, years, ys, taxable)
 
 

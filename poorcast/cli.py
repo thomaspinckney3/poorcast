@@ -316,6 +316,17 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "5/7/10/20/30y, interpolated) instead of a flat --tips-ladder-yield",
     )
     r.add_argument(
+        "--tips-ladder-tail",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help="real yield (%%) for ladder rungs beyond the curve's 30y point - "
+        "such rungs can't be bought today and must be rolled into at future "
+        "long real yields. Default: today's 30y yield (bridge-lock "
+        "approximation); the 2010-2026 DFII30 median ~1.0 is the "
+        "conservative bracket",
+    )
+    r.add_argument(
         "--tips-ladder-deferred",
         action="store_true",
         help="hold the ladder in a tax-deferred account. Default: taxable — "
@@ -832,6 +843,10 @@ def main(argv: list[str] | None = None) -> int:
             ladder_yield=args.tips_ladder_yield / 100.0,
             ladder_curve=ladder_curve,
             ladder_years=getattr(args, "ladder_years", None),
+            ladder_tail_yield=(
+                None if args.tips_ladder_tail is None
+                else args.tips_ladder_tail / 100.0
+            ),
             income=tuple(streams) or None,
             expenses=tuple(expenses) or None,
             tax_rate=0.0 if strip_tax else args.tax_rate / 100.0,
