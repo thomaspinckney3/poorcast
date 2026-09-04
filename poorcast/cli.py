@@ -129,8 +129,9 @@ def parse_pe_path(text: str) -> list[tuple[float, float]]:
     points.sort()
     if len(points) < 2:
         raise ValueError("a P/E path needs at least two PE@YEAR points")
-    if any(b[0] <= a[0] for a, b in zip(points, points[1:])):
-        raise ValueError("P/E path years must be strictly increasing")
+    months = [int(round(y * 12)) for y, _ in points]
+    if any(b <= a for a, b in zip(months, months[1:])):
+        raise ValueError("P/E path points must be at least one month apart")
     return points
 
 
@@ -417,7 +418,7 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "'30@0,20@10,30@40': piecewise-linear in log-P/E (constant multiple "
         "expansion per segment, relative to the historical rate), held flat "
         "after the last point. Years are from the start of the simulation. "
-        "Mutually exclusive with --multiple-expansion",
+        "Supersedes any multiple-expansion setting",
     )
     r.add_argument(
         "--adjust",
@@ -427,7 +428,8 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "us_bonds_10yr=-1.1,muni_bonds=-1.8 to anchor bond returns at "
         "today's yields instead of the sampled-history average (which "
         "includes the 1982-2020 yield decline). Stacks with "
-        "--multiple-expansion",
+        "--multiple-expansion; replaces (does not merge with) a config "
+        "[adjustments] table",
     )
     r.add_argument(
         "--rebalance",
@@ -577,6 +579,22 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             print(f"error: bad --adjust entry in {args.adjust!r}; expected ASSET=PCT,...")
             return 2
+        unknown = [
+            k for k in extra
+            if k not in panel.columns or k.startswith("income_") or k == "inflation"
+        ]
+        if unknown:
+            print(f"error: unknown asset(s) in adjustments: {unknown}")
+            return 2
+        held: set = set()
+        for alloc in [args.allocation or {}] + [
+            a.allocation or {} for a in (accounts or ())
+        ]:
+            held |= set(alloc)
+        idle = [k for k in extra if k not in held]
+        if idle and not args.optimize:
+            print(f"note: adjustment asset(s) {idle} are in no allocation and "
+                  "have no effect on this run")
         return_adjustments = dict(return_adjustments or {})
         for k, v in extra.items():
             return_adjustments[k] = return_adjustments.get(k, 0.0) + v

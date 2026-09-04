@@ -279,3 +279,10 @@ def test_parse_schedule_years_from_start_with_age_zero():
     # Without --age the CLI passes age=0: numbers are simulation years.
     s = parse_schedule("20000:2-6,100000:6-18", age=0, initial=1e6)
     assert s == ((24, 20000.0), (72, 100000.0), (216, 0.0))
+
+
+def test_pe_path_rejects_sub_month_points():
+    from poorcast.cli import parse_pe_path
+
+    with pytest.raises(ValueError, match="one month apart"):
+        parse_pe_path("30@0,29@5.01,20@5.02")

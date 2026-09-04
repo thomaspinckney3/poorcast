@@ -172,7 +172,14 @@ def load_config(path: str) -> dict:
                     v = o[key]
                     if not (isinstance(v, list) and len(v) == 3):
                         raise ConfigError(f"[optimize] {key} must be [min, max, step]")
-                    grid[key] = [_num(x, f"optimize.{key}") for x in v]
+                    lo, hi, st = (_num(x, f"optimize.{key}") for x in v)
+                    if st <= 0 or lo > hi or lo < 0:
+                        raise ConfigError(
+                            f"[optimize] {key} needs 0 <= min <= max and step > 0"
+                        )
+                    if key == "equity" and hi > 100:
+                        raise ConfigError("[optimize] equity is in percent (0-100)")
+                    grid[key] = [lo, hi, st]
             if not grid:
                 raise ConfigError("[optimize] needs an equity and/or ladder range")
             out["optimize_grid"] = grid
@@ -207,7 +214,7 @@ def load_config(path: str) -> dict:
                 if key not in p:
                     raise ConfigError(f"{where} needs `{key}`")
             parts.append(
-                f"{_num(p['pe'], where + '.pe'):g}@{_num(p['year'], where + '.year'):g}"
+                f"{_num(p['pe'], where + '.pe')!r}@{_num(p['year'], where + '.year')!r}"
             )
         out["pe_path"] = ",".join(parts)
 

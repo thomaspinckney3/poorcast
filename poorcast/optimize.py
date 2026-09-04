@@ -145,6 +145,11 @@ def household_candidate(accounts, base_alloc, equity: float, ladder_total: float
         for k, v in de.items():
             agg_de[k] = agg_de.get(k, 0.0) + v * a.balance
     agg_eq, agg_de = _norm(agg_eq), _norm(agg_de)
+    # Every candidate carries the full union of liquid assets (zero-weighted
+    # where unused) so the engine resolves the SAME sampling window for every
+    # candidate - otherwise common random numbers silently break at grid
+    # edges that drop short-history assets.
+    union = sorted(set(agg_eq) | set(agg_de))
 
     remaining = ladder_total
     assigned: dict[int, float] = {}
@@ -163,14 +168,13 @@ def household_candidate(accounts, base_alloc, equity: float, ladder_total: float
         alloc = a.allocation or base_alloc or {}
         eqp = _norm(_buckets(alloc)[0]) or agg_eq
         dep = _norm(_buckets(alloc)[1]) or agg_de
-        wl = assigned.get(i, 0.0) / a.balance
+        wl = assigned.get(i, 0.0) / a.balance if a.balance > 0 else 0.0
         liquid = 1.0 - wl
-        new: dict = {}
+        new: dict = {k: 0.0 for k in union}
         for k, v in eqp.items():
             new[k] = new.get(k, 0.0) + liquid * equity * v
         for k, v in dep.items():
             new[k] = new.get(k, 0.0) + liquid * (1.0 - equity) * v
-        new = {k: v for k, v in new.items() if v > 1e-12}
         if wl > 1e-12:
             new[LADDER] = wl
         out.append(replace(a, allocation=new))
@@ -210,6 +214,24 @@ def optimize_household(
         if ladder_grid is None:
             ladder_grid = [cur_l]
 
+    if len(equity_grid) > 1:
+        has_eq = has_de = False
+        for a in accounts:
+            if a.kind == "529":
+                continue
+            eq, de = _buckets(a.allocation or base.allocation or {})
+            has_eq = has_eq or bool(eq)
+            has_de = has_de or bool(de)
+        if not (has_eq and has_de):
+            raise ValueError(
+                "an equity search needs both equity and defensive assets "
+                "somewhere in the household's allocations"
+            )
+    capacity = sum(
+        a.balance for a in accounts if a.kind in ("traditional", "taxable")
+    )
+    screen_seed = base.seed if base.seed is not None else refine_seeds[0]
+
     def stats(r):
         term = r.real_balance[:, -1]
         return {
@@ -220,12 +242,22 @@ def optimize_household(
         }
 
     rows = []
+    seen = set()
     for L in ladder_grid:
+        actual = min(L, capacity)
+        clipped = "" if actual >= L else f" (clipped from ${L / 1e6:g}M)"
         for e in equity_grid:
-            cand = household_candidate(accounts, base.allocation, e, L)
-            r = simulate(panel, replace(base, accounts=cand, n_sims=screen_sims))
+            key = (round(actual, 6), round(e, 9))
+            if key in seen:
+                continue  # a clipped duplicate of an already-screened candidate
+            seen.add(key)
+            cand = household_candidate(accounts, base.allocation, e, actual)
+            r = simulate(
+                panel,
+                replace(base, accounts=cand, n_sims=screen_sims, seed=screen_seed),
+            )
             s = stats(r)
-            row = {"label": f"ladder ${L / 1e6:g}M · equity {e:.0%}",
+            row = {"label": f"ladder ${actual / 1e6:g}M · equity {e:.0%}{clipped}",
                    "accounts": cand, **s, "success_sd": 0.0}
             rows.append(row)
             if progress:
@@ -245,7 +277,8 @@ def optimize_household(
             meds.append(s["median"])
         refined.append({
             "label": row["label"], "accounts": row["accounts"], "floor": floor,
-            "success": float(np.mean(succ)), "success_sd": float(np.std(succ)),
+            "success": float(np.mean(succ)),
+            "success_sd": float(np.std(succ, ddof=1)) if len(succ) > 1 else 0.0,
             "p5": float(np.mean(p5s)), "median": float(np.mean(meds)),
         })
     refined.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))

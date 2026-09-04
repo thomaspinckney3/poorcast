@@ -200,8 +200,8 @@ def test_pe_path_parses_and_builds_rates(tmp_path):
 
     text = "pe_path = [{year = 0, pe = 30}, {year = 10, pe = 20}, {year = 40, pe = 30}]\n"
     out = load_config(write(tmp_path, text))
-    assert out["pe_path"] == "30@0,20@10,30@40"
     pts = parse_pe_path(out["pe_path"])
+    assert pts == [(0.0, 30.0), (10.0, 20.0), (40.0, 30.0)]
     rates = pe_path_rates(pts, 480)
     assert np.allclose(rates[:120], np.log(20 / 30) / 10)
     assert np.allclose(rates[120:], np.log(30 / 20) / 30)
