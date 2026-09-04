@@ -179,3 +179,12 @@ def test_gap_adjusted_matches_full_ladder_with_coupons_no_gaps():
                                    {i: 0.02 for i in range(1, 7)}, 6)
     for r in rungs:
         assert r["face"] == pytest.approx(ref[r["offset"] - 1])
+
+
+def test_model_clean_price_premium_par_discount():
+    from poorcast.ladder import model_clean_price
+
+    assert model_clean_price(0.02, 0.02, 10) == pytest.approx(100.0)     # par
+    assert model_clean_price(0.04, 0.02, 10) > 100.0                     # premium
+    assert model_clean_price(0.001, 0.03, 10) < 100.0                    # discount
+    assert model_clean_price(0.02, 0.0, 5) == pytest.approx(110.0)       # zero yield

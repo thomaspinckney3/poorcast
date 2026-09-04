@@ -193,6 +193,10 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
                      help="look up outstanding TIPS CUSIPs from TreasuryDirect "
                      "for each rung's maturity (for secondary-market buying); "
                      "flags years with no maturing TIPS")
+    lad.add_argument("--price", action="store_true",
+                     help="with --cusips, add a MODELED clean price per $100 "
+                     "(from each bond's coupon and today's real curve) and "
+                     "estimated outlay — an estimate, not a live quote")
 
     r = sub.add_parser("run", help="run a simulation")
     r.add_argument(
@@ -556,8 +560,11 @@ def _run_ladder(args) -> int:
             a = annual if annual is not None else cost / unit.cost
             spec = build_ladder(a, yrs, args.lyield / 100.0, taxable=taxable)
         if tips is not None:
+            pcurve = current_real_curve() if args.price else None
+            price_curve = ({m: pcurve[m] for m in pcurve} if pcurve else None)
             print(format_ladder_gap_adjusted(
-                spec, tips, datetime.date.today().year, label=label))
+                spec, tips, datetime.date.today().year, label=label,
+                price_curve=price_curve))
         else:
             print(format_ladder(spec, label=label))
         return spec

@@ -217,8 +217,19 @@ def build_available_ladder(
     ]
 
 
+def model_clean_price(coupon: float, ytm: float, years: float) -> float:
+    """Model clean price per $100 real face: PV of an annual-coupon bond at
+    the real yield-to-maturity. Premium when coupon>ytm, discount when <."""
+    if years <= 0:
+        return 100.0
+    if abs(ytm) < 1e-9:
+        return 100.0 * (1 + coupon * years)
+    return 100.0 * (coupon / ytm * (1 - (1 + ytm) ** -years) + (1 + ytm) ** -years)
+
+
 def format_ladder_gap_adjusted(
-    spec: "LadderSpec", tips: list[dict], base_year: int, label: str = ""
+    spec: "LadderSpec", tips: list[dict], base_year: int, label: str = "",
+    price_curve: dict | None = None,
 ) -> str:
     """Buy list adjusted for real TIPS availability: one row per purchasable
     CUSIP (face consolidated to also cover the gap years it funds), plus a
@@ -240,20 +251,38 @@ def format_ladder_gap_adjusted(
         f"{head} — ${spec.annual:,.0f}/yr real for {spec.years}y; "
         f"buy {len(rungs)} securities:"
     )
-    out.append(f"  {'CUSIP':>11}  {'matures':>10}  {'real face $':>13}  "
-               f"{'coupon':>7}  covers")
-    cost = 0.0
+    import datetime as _dt
+    px = price_curve is not None
+    hdr = f"  {'CUSIP':>11}  {'matures':>10}  {'real face $':>13}  {'coupon':>7}"
+    if px:
+        hdr += f"  {'est px':>7}  {'est outlay $':>13}"
+    out.append(hdr + "  covers")
+    cost = outlay = 0.0
+    mats = sorted(price_curve) if px else []
     for r in rungs:
         t = avail_by_year[base_year + r["offset"]]
         cy = [base_year + y for y in r["covers"]]
         span = f"{cy[0]}" if len(cy) == 1 else f"{cy[0]}-{cy[-1]}"
         cost += r["face"]
-        out.append(
-            f"  {t['cusip']:>11}  {t['maturity'].isoformat():>10}  "
-            f"{r['face']:>13,.0f}  {r['coupon']:>6.2%}  {span}"
-        )
-    out.append(f"  buildable cost ${cost:,.0f} for years "
-               f"{base_year + 1}-{base_year + buildable}")
+        line = (f"  {t['cusip']:>11}  {t['maturity'].isoformat():>10}  "
+                f"{r['face']:>13,.0f}  {r['coupon']:>6.2%}")
+        if px:
+            n = (t["maturity"] - _dt.date.today()).days / 365.25
+            import numpy as _np
+            ytm = float(_np.interp(n, mats, [price_curve[m] for m in mats]))
+            p = model_clean_price(t["coupon"], ytm, n)
+            o = r["face"] / 100.0 * p
+            outlay += o
+            line += f"  {p:>7.2f}  {o:>13,.0f}"
+        out.append(line + f"  {span}")
+    tag = (f"; est. outlay ${outlay:,.0f}" if px else "")
+    out.append(f"  buildable cost ${cost:,.0f} (real face) for years "
+               f"{base_year + 1}-{base_year + buildable}{tag}")
+    if price_curve is not None:
+        out.append("  (est px = modeled clean price per $100 real face at "
+                   "today's real curve; live quotes come from your broker's "
+                   "bond desk — real cash also reflects each bond's inflation "
+                   "index ratio)")
     tail = spec.years - buildable
     if tail > 0:
         out.append(
