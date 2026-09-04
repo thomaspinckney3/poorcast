@@ -56,7 +56,10 @@ def _build(annual: float, years: int, yields: np.ndarray, taxable: bool) -> Ladd
     if annual <= 0:
         raise ValueError("ladder annual amount must be positive")
     if not ((0 <= yields) & (yields < 0.2)).all():
-        raise ValueError(f"implausible real yield(s) {yields}")
+        raise ValueError(
+            f"unsupported real yield(s) {yields}: the par-TIPS construction "
+            "(coupon = yield) cannot represent negative real yields"
+        )
     faces = rung_faces(annual, years, yields)
     cost = float(faces.sum())
     rep = float((yields * faces).sum() / cost)

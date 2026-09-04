@@ -31,7 +31,7 @@ def test_positive_yield_is_cheaper():
 def test_invalid_inputs_rejected():
     with pytest.raises(ValueError, match="positive"):
         build_ladder(0, 30, 0.02)
-    with pytest.raises(ValueError, match="implausible"):
+    with pytest.raises(ValueError, match="unsupported"):
         build_ladder(40_000, 30, 0.5)
 
 

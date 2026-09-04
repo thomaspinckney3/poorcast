@@ -194,6 +194,10 @@ def terminal_hist(result: SimResult, ax=None, real: bool = True):
     terminal = bal[:, -1]
     positive = terminal[terminal > 0]
     depleted_share = 1 - len(positive) / len(terminal)
+    if len(positive) == 0:
+        ax.set_title("Terminal wealth: every path depleted")
+        ax.set_ylabel("Paths")
+        return ax
 
     lo = np.percentile(positive, 0.5)
     hi = np.percentile(positive, 99.5)
@@ -415,7 +419,7 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         if "terminal_r2" in seq:
             parts.append(
                 f"explains {seq['terminal_r2']:.0%} of terminal-wealth variance "
-                f"(time share {seq['equal_share']:.0%})"
+                f"among surviving paths (time share {seq['equal_share']:.0%})"
             )
         if "fail_rate_bad_start" in seq:
             parts.append(

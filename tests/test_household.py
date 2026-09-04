@@ -364,3 +364,63 @@ def test_scheduled_traditional_draws_are_distributions():
     assert np.allclose(r.account_terminal[:, 1], 1000.0 - 120.0 - 30.0)
     assert np.allclose(r.account_terminal[:, 0], 1000.0)
     assert np.allclose(r.total_tax_real, 30.0)
+
+
+# --- audit fixes -------------------------------------------------------------
+
+
+def test_tax_bill_collected_across_accounts():
+    # Bracket tax on IRA draws must not be forgiven when the tiny taxable
+    # payer can't cover it: single-filer tax on 60k of distributions is
+    # 1240 + 12% * (43_900 - 12_400) = 5_020; taxable pays 100, IRA the rest
+    # (and that portion is a further distribution next year).
+    panel = make_panel()
+    c = cfg(
+        age=60,
+        accounts=(Account("taxable", 100.0), Account("traditional", 500_000.0)),
+        withdraw_order=("traditional", "taxable"),
+        tax_brackets="single",
+        withdrawal=Withdrawal("fixed_real", amount=60_000.0),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.total_tax_real, 5_020.0)
+    assert np.allclose(r.account_terminal[:, 0], 0.0)
+    assert np.allclose(r.account_terminal[:, 1], 500_000.0 - 60_000.0 - 4_920.0)
+
+
+def test_inflows_seed_a_drained_account():
+    # Income surplus must be invested even after the taxable account drained:
+    # taxable empties in month 4; from month 6 a 30/mo surplus rebuilds it.
+    panel = make_panel()
+    c = cfg(
+        accounts=(Account("taxable", 100.0), Account("roth", 1000.0)),
+        withdrawal=Withdrawal("fixed_real", amount=240.0),
+        income=(IncomeStream(600.0, start_month=6),),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.account_terminal[:, 0], 6 * 30.0)
+    assert np.allclose(r.account_terminal[:, 1], 1000.0 - 20.0)  # month 5 only
+
+
+def test_allocation_rule_weights_validated():
+    panel = make_panel(ret_b=0.0)
+    bad = lambda state: np.full((state.balance.shape[0], 2), 0.55)
+    c = cfg(allocation={"a": 0.5, "b": 0.5}, allocation_rule=bad)
+    with pytest.raises(ValueError, match="sum to 1"):
+        simulate(panel, c)
+
+
+def test_glide_years_zero_rejected():
+    panel = make_panel(ret_b=0.0)
+    c = cfg(allocation={"a": 1.0}, allocation_end={"a": 1.0}, glide_years=0)
+    with pytest.raises(ValueError, match="glide_years"):
+        simulate(panel, c)
+
+
+def test_median_cagr_counts_depleted_paths():
+    from poorcast.simulate import summarize
+
+    panel = make_panel()
+    r = simulate(panel, cfg(
+        initial=1000.0, withdrawal=Withdrawal("fixed_real", amount=5000.0)))
+    assert summarize(r)["median_cagr"] == -1.0  # every path depletes

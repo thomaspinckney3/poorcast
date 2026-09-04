@@ -395,6 +395,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         w_end = np.array([cfg.allocation_end[a] for a in assets], dtype=float)
         if abs(w_end.sum() - 1.0) > 1e-6:
             raise ValueError(f"allocation_end weights sum to {w_end.sum():.4f}, expected 1")
+        if cfg.glide_years is not None and cfg.glide_years < 1:
+            raise ValueError(f"glide_years must be >= 1, got {cfg.glide_years}")
         glide_m = min((cfg.glide_years or cfg.years) * 12, n_months_total)
         frac = np.minimum(np.arange(n_months_total) / max(glide_m - 1, 1), 1.0)
         target_w = weights[None, :] + frac[:, None] * (w_end - weights)[None, :]
@@ -598,10 +600,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         if age_now < RMD_START_AGE:
             return 0.0
         rmd = year_start_bal / rmd_period(age_now)
-        deemed = np.maximum(rmd - dist_acc, 0.0)
+        trad_tot = trad_acct.holdings.sum(axis=1)
+        deemed = np.minimum(np.maximum(rmd - dist_acc, 0.0), trad_tot)
         if taxed:
-            trad_tot = trad_acct.holdings.sum(axis=1)
-            deemed = np.minimum(deemed, trad_tot)
             with np.errstate(invalid="ignore", divide="ignore"):
                 scale_r = np.where(trad_tot > 0, (trad_tot - deemed) / trad_tot, 1.0)
             trad_acct.holdings *= scale_r[:, None]
@@ -617,6 +618,26 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             tx.holdings += buy
             tx.basis += buy
         return deemed
+
+    def collect(due, first):
+        """Pay a tax bill from `first`, then the remaining accounts in draw
+        order — the bill is owed by the household, not one account. Returns
+        (paid, paid_from_traditional); the traditional portion is itself a
+        distribution. Any remainder means the household is broke."""
+        order = [first] + [i for i in draw_order if i != first]
+        paid = np.zeros(n_paths)
+        from_trad_pay = np.zeros(n_paths)
+        for i in order:
+            tot = accts[i].holdings.sum(axis=1)
+            pay = np.minimum(due, tot)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                scale = np.where(tot > 0, (tot - pay) / tot, 1.0)
+            prorata_flow(accts[i], scale)
+            due = due - pay
+            paid = paid + pay
+            if trad and i == trad_i:
+                from_trad_pay = pay
+        return paid, from_trad_pay
 
     for m in range(n_months):
         totals = [a.holdings.sum(axis=1) for a in accts]
@@ -739,6 +760,16 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             with np.errstate(invalid="ignore", divide="ignore"):
                 scale = np.where(totals[i] > 0, (totals[i] + flow) / totals[i], 0.0)
             prorata_flow(acct, scale)
+            # A pro-rata scale can't add money to an empty account: seed
+            # inflows into a drained (or depleted) account at target weights
+            # instead of silently dropping them.
+            if i == inflow_i and (cfg.contribution_monthly > 0 or has_flows):
+                empty_in = (totals[i] <= 0) & (np.asarray(flow) > 0)
+                if empty_in.any():
+                    add = np.where(empty_in, flow, 0.0)[:, None] * acct.weights[None, :]
+                    acct.holdings += add
+                    if acct.taxed:
+                        acct.basis += add
         # A path is depleted the first time the household hits zero - whether
         # a withdrawal drained it here or a later-in-the-month settlement
         # (taxes, penalties) zeroed it before this check.
@@ -800,6 +831,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                         hist_indices=months[:, m],
                     )
                     targets = np.asarray(cfg.allocation_rule(state), dtype=float)
+                    if not np.allclose(targets.sum(axis=-1), 1.0, atol=1e-6):
+                        raise ValueError(
+                            "allocation_rule returned weights that do not sum to 1"
+                        )
                 elif not multi:
                     targets = target_w[m][None, :]
                 else:
@@ -829,8 +864,6 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
 
         # Flat-rate taxable settlement, quarterly.
         if taxed and cfg.tax_brackets is None and (m + 1) % 3 == 0:
-            acct = accts[tax_i]
-            total_p = acct.holdings.sum(axis=1)
             net = realized + loss_carry
             gains = np.maximum(net, 0.0)
             loss_carry = np.minimum(net, 0.0)
@@ -844,22 +877,20 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             div_acc = np.zeros(n_paths)
             int_acc = np.zeros(n_paths)
             other_ord_acc = np.zeros(n_paths)
-            tax = np.minimum(tax, total_p)
-            total_tax_real += tax / cum_inflation[:, m + 1]
-            with np.errstate(invalid="ignore", divide="ignore"):
-                scale_t = np.where(total_p > 0, (total_p - tax) / total_p, 0.0)
-            prorata_flow(acct, np.where(total_p > 0, scale_t, 1.0))
+            paid, from_trad_pay = collect(tax, tax_i)
+            total_tax_real += paid / cum_inflation[:, m + 1]
+            if trad:
+                dist_acc += from_trad_pay
 
         # Brackets: one joint annual settlement - taxable investment income
         # and traditional distributions stack through the same brackets and
         # share one standard deduction, as on a real return. Paid from the
-        # taxable account when there is one (not a distribution), else from
-        # the traditional account (a distribution).
+        # taxable account first when there is one, else the traditional
+        # account, then the remaining accounts; the portion paid from the
+        # IRA is itself a distribution.
         if cfg.tax_brackets is not None and (taxed or trad) and annual:
             from .tax import annual_tax
 
-            payer = accts[tax_i] if taxed else accts[trad_i]
-            total_p = payer.holdings.sum(axis=1)
             gains = 0.0
             if taxed:
                 net = realized + loss_carry
@@ -868,8 +899,6 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 realized = np.zeros(n_paths)
             if trad:
                 deemed = rmd_deemed(m)
-                if taxed:
-                    total_p = payer.holdings.sum(axis=1)  # transfer landed here
                 ordinary = dist_acc + deemed + other_ord_acc
             else:
                 ordinary = other_ord_acc
@@ -883,35 +912,23 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 div_acc = np.zeros(n_paths)
                 int_acc = np.zeros(n_paths)
             other_ord_acc = np.zeros(n_paths)
-            tax = np.minimum(tax, total_p)
-            total_tax_real += tax / cum_inflation[:, m + 1]
-            with np.errstate(invalid="ignore", divide="ignore"):
-                scale_t = np.where(
-                    total_p > 0, (total_p - tax) / total_p, 0.0 if taxed else 1.0
-                )
-            if taxed:
-                prorata_flow(payer, np.where(total_p > 0, scale_t, 1.0))
-            else:
-                payer.holdings *= scale_t[:, None]
+            paid, from_trad_pay = collect(tax, tax_i if taxed else trad_i)
+            total_tax_real += paid / cum_inflation[:, m + 1]
             if trad:
-                # A tax paid from the IRA is itself a distribution.
-                dist_acc = np.zeros(n_paths) if taxed else tax.copy()
+                dist_acc = from_trad_pay
 
-        # Flat-rate traditional settlement, annual.
+        # Flat-rate traditional settlement, annual. Withholding semantics:
+        # paid from the IRA first (that portion is a further distribution),
+        # falling back to the other accounts.
         if trad and cfg.tax_brackets is None and annual:
-            acct = accts[trad_i]
             deemed = rmd_deemed(m)
-            total_p = acct.holdings.sum(axis=1)
             ordinary = dist_acc + deemed + (other_ord_acc if not taxed else 0.0)
             tax = (ord_rate + cfg.state_tax) * ordinary
             if not taxed:
                 other_ord_acc = np.zeros(n_paths)
-            tax = np.minimum(tax, total_p)
-            total_tax_real += tax / cum_inflation[:, m + 1]
-            with np.errstate(invalid="ignore", divide="ignore"):
-                scale_t = np.where(total_p > 0, (total_p - tax) / total_p, 1.0)
-            acct.holdings *= scale_t[:, None]
-            dist_acc = tax.copy()  # paying the tax is itself a distribution
+            paid, from_trad_pay = collect(tax, trad_i)
+            total_tax_real += paid / cum_inflation[:, m + 1]
+            dist_acc = from_trad_pay  # the IRA-paid portion is a distribution
 
         # Penalties (early withdrawals, non-qualified 529 earnings) settle
         # annually, paid from the taxable account first, then the others;
@@ -968,8 +985,10 @@ def summarize(result: SimResult, real: bool = True) -> dict:
     pct = np.percentile(terminal, [5, 25, 50, 75, 95])
     years = result.config.years
     initial = total_initial(result.config)
+    # Depleted paths count as -100%: excluding them would report survivor-only
+    # growth next to all-path terminal percentiles.
     with np.errstate(divide="ignore"):
-        cagr = np.where(terminal > 0, (terminal / initial) ** (1 / years) - 1, np.nan)
+        cagr = np.where(terminal > 0, (terminal / initial) ** (1 / years) - 1, -1.0)
     return {
         "n_paths": result.n_paths,
         "success_rate": result.success_rate,
@@ -978,7 +997,7 @@ def summarize(result: SimResult, real: bool = True) -> dict:
         "terminal_median": pct[2],
         "terminal_p75": pct[3],
         "terminal_p95": pct[4],
-        "median_cagr": float(np.nanmedian(cagr)),
+        "median_cagr": float(np.median(cagr)),
         "prob_loss": float((terminal < initial).mean()),
         "sample_window": f"{result.window.min()}..{result.window.max()}",
     }

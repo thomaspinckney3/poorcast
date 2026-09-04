@@ -496,7 +496,14 @@ print(f"success: {result.success_rate:.1%}")
 
 This is a research toy, not financial advice. Bootstrapping assumes the future
 is drawn from the same distribution as 1960–present; it ignores mean reversion
-beyond the block length, and fees default to zero (set `--fees` to yours). The bond and muni series are derived
+beyond the block length, and fees default to zero (set `--fees` to yours).
+The yield-derived bond series carry known conventions worth knowing: the
+pricing approximation runs ~15–20bp/yr hot versus exact repricing (one-signed,
+so derived Treasury/muni history is slightly flattered), and the pre-2007 muni
+series earns 20-year-yield carry while being priced at 10-year duration — both
+give fixed-income-heavy allocations a modest structural tailwind. A taxable
+`--pension` in a household holding only Roth/529 accounts goes untaxed (no tax
+regime exists to settle it). The bond and muni series are derived
 from constant-maturity yields via a standard pricing approximation. Success
 rates above ~95% are not distinguishable from each other given history this
 short.
