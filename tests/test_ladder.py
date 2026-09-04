@@ -123,3 +123,59 @@ def test_ladder_cli_from_cost_and_config(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "taxable account, $200,000" in out
     assert main(["ladder"]) == 2  # neither annual/cost/config
+
+
+def test_match_cusips_picks_by_year_and_flags_gaps():
+    import datetime
+    from poorcast.ladder import match_cusips
+
+    tips = [
+        {"cusip": "AAA", "maturity": datetime.date(2028, 1, 15), "coupon": 0.005, "term": ""},
+        {"cusip": "BBB", "maturity": datetime.date(2028, 7, 15), "coupon": 0.006, "term": ""},
+        {"cusip": "CCC", "maturity": datetime.date(2030, 1, 15), "coupon": 0.012, "term": ""},
+    ]
+    picks = match_cusips(5, tips, base_year=2026)  # rung years 2027..2031
+    assert picks[0] is None                        # 2027: no TIPS
+    assert picks[1]["cusip"] == "AAA"              # 2028: earliest in year
+    assert picks[2] is None                        # 2029
+    assert picks[3]["cusip"] == "CCC"              # 2030
+    assert picks[4] is None                        # 2031
+
+
+def test_format_ladder_with_cusips_shows_column_and_gap_note():
+    import datetime
+    from poorcast.ladder import build_ladder, format_ladder, match_cusips
+
+    spec = build_ladder(40_000.0, 3, 0.02)
+    tips = [{"cusip": "ZZZ", "maturity": datetime.date(2028, 1, 15),
+             "coupon": 0.02, "term": ""}]
+    txt = format_ladder(spec, cusips=match_cusips(3, tips, 2026), base_year=2026)
+    assert "ZZZ" in txt and "CUSIP" in txt
+    assert "have no maturing TIPS" in txt  # 2027 and 2029 are gaps
+
+
+def test_gap_adjusted_faces_cover_every_year():
+    from poorcast.ladder import build_available_ladder
+
+    # Year-3 gap (offsets 1,2,4 available), 4-year horizon, zero coupons:
+    # the year-2 bond absorbs year 3, so it funds 2x annual.
+    rungs = build_available_ladder(100.0, [1, 2, 4], {1: 0, 2: 0, 4: 0}, 4)
+    by = {r["offset"]: r for r in rungs}
+    assert by[2]["covers"] == [2, 3] and by[2]["face"] == pytest.approx(200.0)
+    assert by[1]["face"] == pytest.approx(100.0)
+    assert by[4]["face"] == pytest.approx(100.0)
+    # Reduces to the plain ladder when every year is available.
+    full = build_available_ladder(100.0, [1, 2, 3, 4], {i: 0.0 for i in range(1, 5)}, 4)
+    assert all(r["face"] == pytest.approx(100.0) for r in full)
+
+
+def test_gap_adjusted_matches_full_ladder_with_coupons_no_gaps():
+    import numpy as np
+    from poorcast.ladder import build_available_ladder, rung_faces
+
+    ys = np.full(6, 0.02)
+    ref = rung_faces(50_000.0, 6, ys)
+    rungs = build_available_ladder(50_000.0, [1, 2, 3, 4, 5, 6],
+                                   {i: 0.02 for i in range(1, 7)}, 6)
+    for r in rungs:
+        assert r["face"] == pytest.approx(ref[r["offset"] - 1])

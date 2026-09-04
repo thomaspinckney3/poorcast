@@ -189,6 +189,10 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
                      "bridge-locked at the 30y point)")
     lad.add_argument("--taxable", action="store_true",
                      help="note the ladder as taxable (phantom income)")
+    lad.add_argument("--cusips", action="store_true",
+                     help="look up outstanding TIPS CUSIPs from TreasuryDirect "
+                     "for each rung's maturity (for secondary-market buying); "
+                     "flags years with no maturing TIPS")
 
     r = sub.add_parser("run", help="run a simulation")
     r.add_argument(
@@ -522,12 +526,26 @@ def _run_ladder(args) -> int:
     """poorcast ladder: print the rung-by-rung buy list for a ladder, either
     from explicit --annual/--cost + pricing, or from a plan config's
     tips_ladder allocations."""
-    from .ladder import build_ladder, build_ladder_curve, current_real_curve, format_ladder
+    from .ladder import (build_ladder, build_ladder_curve, current_real_curve,
+                         format_ladder, format_ladder_gap_adjusted,
+                         outstanding_tips)
 
     curve = current_real_curve() if args.curve else None
     tail = None if args.tail is None else args.tail / 100.0
+    tips = None
+    if args.cusips:
+        try:
+            tips = outstanding_tips()
+        except Exception as e:
+            print(f"error: could not fetch TIPS list from TreasuryDirect: {e}")
+            return 2
+        import datetime
+        print(f"Matching against {len(tips)} outstanding TIPS "
+              f"(maturities {tips[0]['maturity'].year}-{tips[-1]['maturity'].year}, "
+              f"as of {datetime.date.today().isoformat()}).\n")
 
     def one(annual=None, cost=None, years=None, taxable=False, label=""):
+        import datetime
         yrs = years or args.years
         if curve is not None:
             unit = build_ladder_curve(1.0, yrs, curve, taxable=taxable, tail_yield=tail)
@@ -537,7 +555,11 @@ def _run_ladder(args) -> int:
             unit = build_ladder(1.0, yrs, args.lyield / 100.0, taxable=taxable)
             a = annual if annual is not None else cost / unit.cost
             spec = build_ladder(a, yrs, args.lyield / 100.0, taxable=taxable)
-        print(format_ladder(spec, label=label))
+        if tips is not None:
+            print(format_ladder_gap_adjusted(
+                spec, tips, datetime.date.today().year, label=label))
+        else:
+            print(format_ladder(spec, label=label))
         return spec
 
     if args.config:
