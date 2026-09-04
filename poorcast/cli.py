@@ -264,6 +264,14 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "percent-of-balance: %% of current balance, recomputed yearly (never fully depletes)",
     )
     r.add_argument(
+        "--gross",
+        action="store_true",
+        help="treat the withdrawal target as the TOTAL budget, gross of "
+        "taxes: taxes paid in one year reduce the next year's spendable "
+        "amount (default: the target is pure consumption; taxes are drawn "
+        "from the portfolio on top). Fixed-real withdrawals only",
+    )
+    r.add_argument(
         "--spend-decline",
         default=None,
         metavar="PCT[@AGE]",
@@ -700,6 +708,11 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     else:
         withdrawal = parse_withdrawal(args.withdraw, args.withdraw_strategy)
+    if args.gross:
+        if withdrawal.kind != "fixed_real":
+            print("error: --gross requires a fixed-real withdrawal")
+            return 2
+        withdrawal.gross_of_tax = True
     if args.spend_decline is not None:
         if withdrawal.kind != "fixed_real":
             print("error: --spend-decline requires a fixed-real withdrawal")

@@ -48,6 +48,11 @@ class Withdrawal:
     # amount/rate/schedule and with flex_floor.
     decline: float = 0.0
     decline_start_month: int = 0
+    # Gross-of-tax budgeting (fixed_real only): the target is the household's
+    # TOTAL budget - taxes paid during one year reduce the next year's
+    # spendable withdrawals dollar for dollar (floored at 0). Without it the
+    # target is pure consumption and taxes are drawn on top.
+    gross_of_tax: bool = False
 
 
 @dataclass(frozen=True)
@@ -650,6 +655,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         raise ValueError("withdrawal schedules only apply to fixed_real withdrawals")
     if w.decline and w.kind != "fixed_real":
         raise ValueError("spending decline only applies to fixed_real withdrawals")
+    if w.gross_of_tax and w.kind != "fixed_real":
+        raise ValueError("gross-of-tax budgeting only applies to fixed_real withdrawals")
     if not 0 <= w.decline < 1:
         raise ValueError(f"decline must be in [0, 1), got {w.decline}")
     if w.kind == "fixed_real":
@@ -719,6 +726,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     total_withdrawn = np.zeros(n_paths)
     total_withdrawn_real = np.zeros(n_paths)
     total_unmet_real = np.zeros(n_paths)  # spending the household couldn't deliver
+    year_tax_real = np.zeros(n_paths)  # taxes booked this year (gross budgeting)
+    tax_debit_real = np.zeros(n_paths)  # last year's taxes, debited from spending
 
     realized = np.zeros(n_paths)  # gains realized since last tax settlement
     loss_carry = np.zeros(n_paths)  # <= 0, carried-forward losses
@@ -893,6 +902,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             if w.flex_floor is not None:
                 real_balance = total_rep / cum_inflation[:, m]
                 spend *= np.clip(real_balance / initial_total, w.flex_floor, 1.0)
+            if w.gross_of_tax:
+                spend = np.maximum(
+                    spend - tax_debit_real / 12.0 * cum_inflation[:, m], 0.0
+                )
         elif w.kind == "percent_of_balance":
             spend = monthly_withdrawal.copy()
         else:
@@ -1153,7 +1166,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             int_acc = np.zeros(n_paths)
             other_ord_acc = np.zeros(n_paths)
             paid, from_trad_pay = collect(tax, tax_i)
-            total_tax_real += paid / cum_inflation[:, m + 1]
+            _t = paid / cum_inflation[:, m + 1]
+            total_tax_real += _t
+            year_tax_real += _t
             if trad:
                 dist_acc += from_trad_pay
 
@@ -1188,7 +1203,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 int_acc = np.zeros(n_paths)
             other_ord_acc = np.zeros(n_paths)
             paid, from_trad_pay = collect(tax, tax_i if taxed else trad_i)
-            total_tax_real += paid / cum_inflation[:, m + 1]
+            _t = paid / cum_inflation[:, m + 1]
+            total_tax_real += _t
+            year_tax_real += _t
             if trad:
                 dist_acc = from_trad_pay
 
@@ -1202,7 +1219,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             if not taxed:
                 other_ord_acc = np.zeros(n_paths)
             paid, from_trad_pay = collect(tax, trad_i)
-            total_tax_real += paid / cum_inflation[:, m + 1]
+            _t = paid / cum_inflation[:, m + 1]
+            total_tax_real += _t
+            year_tax_real += _t
             dist_acc = from_trad_pay  # the IRA-paid portion is a distribution
 
         # Pension-only settlement: tax-free accounts, but taxable outside
@@ -1219,7 +1238,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 tax = (ord_rate + cfg.state_tax) * other_ord_acc
             other_ord_acc = np.zeros(n_paths)
             paid, _ = collect(tax, draw_order[0])
-            total_tax_real += paid / cum_inflation[:, m + 1]
+            _t = paid / cum_inflation[:, m + 1]
+            total_tax_real += _t
+            year_tax_real += _t
 
         # Penalties (early withdrawals, non-qualified 529 earnings) settle
         # annually, paid from the taxable account first, then the others;
@@ -1239,8 +1260,13 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 prorata_flow(accts[i], scale_p)
                 due = due - pay
                 paid = paid + pay
-            total_tax_real += paid / cum_inflation[:, m + 1]
+            _t = paid / cum_inflation[:, m + 1]
+            total_tax_real += _t
+            year_tax_real += _t
 
+        if w.gross_of_tax and annual:
+            tax_debit_real = year_tax_real
+            year_tax_real = np.zeros(n_paths)
         tot_end = accts[0].holdings.sum(axis=1)
         for acct in accts[1:]:
             tot_end = tot_end + acct.holdings.sum(axis=1)

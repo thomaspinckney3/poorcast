@@ -443,3 +443,30 @@ def test_tax_free_household_still_rejects_settings_without_pension():
     panel = make_panel()
     with pytest.raises(ValueError, match="tax-free"):
         simulate(panel, cfg(accounts=(Account("roth", 1000.0),), tax_ordinary=0.25))
+
+
+def test_gross_of_tax_debits_next_years_budget():
+    # $1,000 IRA, 25% flat, gross budget 120/yr. Year 1: full 120 consumed,
+    # 30 of tax settled at year end. Year 2: spendable 120 - 30 = 90; the
+    # year-1 tax payment is itself a distribution, so year-2 ordinary income
+    # is 90 + 30 = 120 -> 30 of tax.
+    panel = make_panel()
+    c = cfg(
+        years=2,
+        age=60,
+        accounts=(Account("traditional", 1000.0),),
+        tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=120.0, gross_of_tax=True),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.total_withdrawn, 120.0 + 90.0)
+    assert np.allclose(r.total_tax_real, 60.0)
+    assert np.allclose(r.balance[:, -1], 1000.0 - 210.0 - 60.0)
+
+
+def test_gross_of_tax_requires_fixed_real():
+    panel = make_panel()
+    with pytest.raises(ValueError, match="gross-of-tax"):
+        simulate(panel, cfg(
+            withdrawal=Withdrawal("percent_of_balance", rate=0.04,
+                                  gross_of_tax=True)))

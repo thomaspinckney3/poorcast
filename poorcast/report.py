@@ -295,6 +295,8 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             wd = f"withdrawing {w.rate:.1%}/yr of initial (inflation-adjusted)"
         else:
             wd = f"withdrawing ${w.amount:,.0f}/yr (inflation-adjusted)"
+        if w.gross_of_tax:
+            wd += ", gross of taxes"
         if w.decline:
             wd += f", spending declining {w.decline:.1%}/yr"
             if w.decline_start_month > 0:

@@ -284,8 +284,12 @@ def load_config(path: str) -> dict:
     if "withdrawal" in raw:
         w = raw["withdrawal"]
         _reject_unknown(
-            w, {"amount", "schedule", "strategy", "flex", "decline"}, "[withdrawal]"
+            w,
+            {"amount", "schedule", "strategy", "flex", "decline", "gross"},
+            "[withdrawal]",
         )
+        if "gross" in w:
+            out["gross"] = _bool(w["gross"], "withdrawal.gross")
         if "amount" in w and "schedule" in w:
             raise ConfigError("[withdrawal] takes `amount` or `schedule`, not both")
         if "amount" in w:
