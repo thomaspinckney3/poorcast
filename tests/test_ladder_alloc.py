@@ -103,3 +103,76 @@ def test_ladder_allocation_validation():
         ))
     with pytest.raises(ValueError, match="non-ladder"):
         simulate(panel, cfg(allocation={"tips_ladder": 1.0}))
+
+
+# --- audit fixes -------------------------------------------------------------
+
+
+def test_single_account_all_ladder_conserves():
+    # Rebalancing must not zero an all-ladder portfolio's reinvested income.
+    r = simulate(make_panel(), cfg(
+        allocation={"a": 0.0, "tips_ladder": 1.0}, ladder_years=2))
+    assert np.allclose(r.balance[:, -1], 1000.0)
+    assert (r.depleted_month == -1).all()
+
+
+def test_renormalization_does_not_leak_value():
+    # A weight sum inside the 1e-6 tolerance must not compound into a loss
+    # when renormalized over a tiny liquid sleeve.
+    r = simulate(make_panel(), cfg(
+        allocation={"a": 0.0009995, "tips_ladder": 0.999},
+        years=30, rebalance_months=1, ladder_years=30,
+    ))
+    assert np.allclose(r.balance[:, -1], 1000.0, rtol=1e-5)
+
+
+def test_rmd_recognized_on_rung_value():
+    # Age 80, all-ladder IRA: payouts 1010/yr fall short of the RMD computed
+    # on the rungs' full value; the shortfall must still be recognized as
+    # taxable income (in-kind distribution), though nothing can transfer.
+    # Year 1: RMD 30300/20.2 = 1500 -> tax 375. Year 2: 29290/19.4 = 1509.79
+    # -> tax 377.45.
+    panel = make_panel()
+    c = cfg(
+        years=2,
+        age=80,
+        accounts=(
+            Account("taxable", 10_000.0, allocation={"a": 1.0}),
+            Account("traditional", 30_300.0, allocation={"tips_ladder": 1.0}),
+        ),
+        tax_ordinary=0.25,
+        ladder_years=30,
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.total_tax_real, 752.448, atol=0.01)
+
+
+def test_zero_liquid_with_covering_income_is_not_depletion():
+    # The expense drains the liquid 20 at month 0; rung income (490/yr at
+    # 0% on a 980-cost 2y ladder) exactly covers the 490/yr target from then
+    # on. Every dollar delivered, terminal $0 -> still a success.
+    r = simulate(make_panel(), cfg(
+        allocation={"a": 0.02, "tips_ladder": 0.98}, ladder_years=2,
+        withdrawal=Withdrawal("fixed_real", amount=490.0),
+        expenses=((0, 20.0),),
+    ))
+    assert (r.depleted_month == -1).all()
+    assert np.allclose(r.total_unmet_real, 0.0)
+
+
+def test_unmet_spending_is_tracked():
+    # Spending target exceeds income + liquid: the shortfall is recorded.
+    r = simulate(make_panel(), cfg(
+        years=1,
+        allocation={"a": 0.05, "tips_ladder": 0.95}, ladder_years=1,
+        withdrawal=Withdrawal("fixed_real", amount=1200.0),
+    ))
+    # Deliverable: 50 liquid + 950 income = 1000; target 1200 -> 200 unmet.
+    assert np.allclose(r.total_unmet_real, 200.0)
+    assert (r.depleted_month >= 0).all()
+
+
+def test_ladder_years_validated():
+    with pytest.raises(ValueError, match="ladder_years"):
+        simulate(make_panel(), cfg(
+            allocation={"a": 0.5, "tips_ladder": 0.5}, ladder_years=0))

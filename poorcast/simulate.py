@@ -233,6 +233,9 @@ class SimResult:
     account_terminal: np.ndarray | None = None
     # Total real income/yr of allocation-based TIPS ladders, None if none.
     ladder_annual: float | None = None
+    # (n_paths,) real dollars of spending the household could not deliver
+    # (liquid exhausted while a target remained). Ladder runs only.
+    total_unmet_real: np.ndarray | None = None
 
     @property
     def real_balance(self) -> np.ndarray:
@@ -412,9 +415,16 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         lad_w.append(wl)
         acct_w_raw.append(wv)
     has_ladder_alloc = any(wl > 0 for wl in lad_w)
-    acct_w = [
-        w / (1.0 - wl) if wl < 1 else w for w, wl in zip(acct_w_raw, lad_w)
-    ]
+    # Liquid rebalance targets: renormalize by the actual asset-weight sum
+    # (dividing by 1-wl would amplify the 1e-6 sum tolerance into a per-
+    # rebalance value leak).
+    acct_w = []
+    for wv, wl in zip(acct_w_raw, lad_w):
+        if wl <= 0:
+            acct_w.append(wv / (1.0 - wl))
+        else:
+            s = wv.sum()
+            acct_w.append(wv / s if s > 0 else wv)
     if has_ladder_alloc:
         if not assets:
             raise ValueError("at least one non-ladder asset is required")
@@ -443,11 +453,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
 
     # Build the per-account rung ladders bought at t=0.
     acct_ladders: dict[int, object] = {}
+    acct_lad_val: dict[int, np.ndarray] = {}
     lyears = 0
     ladder_annual_total = 0.0
     if has_ladder_alloc:
         from .ladder import build_ladder, build_ladder_curve
 
+        if cfg.ladder_years is not None and cfg.ladder_years < 1:
+            raise ValueError(f"ladder_years must be >= 1, got {cfg.ladder_years}")
         lyears = cfg.ladder_years or cfg.years
         for i, (s, wl) in enumerate(zip(specs, lad_w)):
             if wl <= 0:
@@ -580,7 +593,6 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         lm = min(lyears * 12, n_months)
         for lad in acct_ladders.values():
             income_real_m[:lm] += lad.annual / 12.0
-        acct_lad_val = {}
         lad_val_real = np.zeros(n_months + 1)
         for i, lad in acct_ladders.items():
             prin = np.asarray(lad.remaining_principal_real(), dtype=float)
@@ -613,6 +625,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     depleted_month = np.full(n_paths, -1, dtype=int)
     total_withdrawn = np.zeros(n_paths)
     total_withdrawn_real = np.zeros(n_paths)
+    total_unmet_real = np.zeros(n_paths)  # spending the household couldn't deliver
 
     realized = np.zeros(n_paths)  # gains realized since last tax settlement
     loss_carry = np.zeros(n_paths)  # <= 0, carried-forward losses
@@ -708,10 +721,17 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             return 0.0
         rmd = year_start_bal / rmd_period(age_now)
         trad_tot = trad_acct.holdings.sum(axis=1)
-        deemed = np.minimum(np.maximum(rmd - dist_acc, 0.0), trad_tot)
+        # Recognition is capped at the IRA's full value (rungs included -
+        # they can be distributed in kind); only the liquid portion can
+        # actually be transferred to the taxable account.
+        ira_val = trad_tot
+        if trad_i in acct_ladders:
+            ira_val = ira_val + acct_lad_val[trad_i][m + 1] * cum_inflation[:, m + 1]
+        deemed = np.minimum(np.maximum(rmd - dist_acc, 0.0), ira_val)
         if taxed:
+            move = np.minimum(deemed, trad_tot)
             with np.errstate(invalid="ignore", divide="ignore"):
-                scale_r = np.where(trad_tot > 0, (trad_tot - deemed) / trad_tot, 1.0)
+                scale_r = np.where(trad_tot > 0, (trad_tot - move) / trad_tot, 1.0)
             trad_acct.holdings *= scale_r[:, None]
             tx = accts[tax_i]
             tx_tot = tx.holdings.sum(axis=1)
@@ -721,10 +741,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                     tx.holdings / np.where(tx_tot > 0, tx_tot, 1.0)[:, None],
                     tx.weights[None, :],
                 )
-            buy = shares * deemed[:, None]
+            buy = shares * move[:, None]
             tx.holdings += buy
             tx.basis += buy
         return deemed
+
+    # With rung income, depletion means unmet spending, not zero liquid
+    # (percent-of-balance excepted: its target floats with wealth).
+    unmet_mode = bool(acct_ladders) and w.kind != "percent_of_balance"
 
     def collect(due, first):
         """Pay a tax bill from `first`, then the remaining accounts in draw
@@ -806,6 +830,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             spend = np.maximum(net, 0.0)
         cap = total if not has_acct_sched else total - pre_total
         wd = np.where(alive, np.minimum(spend, cap), 0.0)
+        if acct_ladders:
+            unmet = spend - wd
+            total_unmet_real += unmet / cum_inflation[:, m]
         total_withdrawn += wd
         total_withdrawn_real += wd / cum_inflation[:, m]
         if has_acct_sched:
@@ -914,23 +941,34 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                         acct.basis += add
         # A path is depleted the first time the household hits zero - whether
         # a withdrawal drained it here or a later-in-the-month settlement
-        # (taxes, penalties) zeroed it before this check.
+        # (taxes, penalties) zeroed it before this check. With rung income
+        # still arriving, a zero liquid balance isn't failure; depletion is
+        # the first month spending goes unmet (percent-of-balance excepted:
+        # its target floats, so liquid exhaustion still marks depletion).
+        unmet_flags = unmet_mode
         if multi:
             for acct in accts:
                 emptied = acct.holdings.sum(axis=1) <= 1e-9
                 acct.holdings[emptied] = 0.0
                 acct.basis[emptied] = 0.0
-            house = accts[0].holdings.sum(axis=1)
-            for acct in accts[1:]:
-                house = house + acct.holdings.sum(axis=1)
-            newly_dead = (depleted_month < 0) & (house <= 1e-9)
+            if unmet_flags:
+                newly_dead = (depleted_month < 0) & (unmet > 1e-9)
+            else:
+                house = accts[0].holdings.sum(axis=1)
+                for acct in accts[1:]:
+                    house = house + acct.holdings.sum(axis=1)
+                newly_dead = (depleted_month < 0) & (house <= 1e-9)
             depleted_month[newly_dead] = m
         else:
             acct = accts[0]
-            newly_dead = (depleted_month < 0) & (acct.holdings.sum(axis=1) <= 1e-9)
+            dead_liq = acct.holdings.sum(axis=1) <= 1e-9
+            if unmet_flags:
+                newly_dead = (depleted_month < 0) & (unmet > 1e-9)
+            else:
+                newly_dead = (depleted_month < 0) & dead_liq
             depleted_month[newly_dead] = m
-            acct.holdings[newly_dead] = 0.0
-            acct.basis[newly_dead] = 0.0
+            acct.holdings[dead_liq] = 0.0
+            acct.basis[dead_liq] = 0.0
 
         # Market returns for the month.
         for acct in accts:
@@ -959,7 +997,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         # rule-driven in single-account mode; static per account otherwise).
         if (m + 1) % cfg.rebalance_months == 0:
             for i, acct in enumerate(accts):
-                if multi and acct.weights.sum() <= 0:
+                if acct.weights.sum() <= 0:
                     continue  # all-ladder account: no liquid targets
                 tot = acct.holdings.sum(axis=1)
                 if not multi and cfg.allocation_rule is not None:
@@ -1118,9 +1156,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         balance[:, m + 1] = tot_end
 
     # A settlement in the final month can zero a path after its last
-    # depletion check ran.
-    final_dead = (depleted_month < 0) & (balance[:, -1] <= 1e-9)
-    depleted_month[final_dead] = n_months - 1
+    # depletion check ran. (Not in unmet mode: a ladder-annuitized path can
+    # legitimately end at exactly zero with every dollar delivered.)
+    if not unmet_mode:
+        final_dead = (depleted_month < 0) & (balance[:, -1] <= 1e-9)
+        depleted_month[final_dead] = n_months - 1
 
     return SimResult(
         config=cfg,
@@ -1151,6 +1191,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             else None
         ),
         ladder_annual=ladder_annual_total or None,
+        total_unmet_real=total_unmet_real if acct_ladders else None,
     )
 
 

@@ -296,6 +296,11 @@ def load_config(path: str) -> dict:
         )
         # `annual` sizes the external (income-targeted) ladder; without it the
         # section just prices tips_ladder allocation entries.
+        if "annual" in lad and "years" in lad:
+            raise ConfigError(
+                "[tips_ladder] `years` applies to tips_ladder allocations; "
+                "the external `annual` ladder always spans the horizon"
+            )
         if "annual" in lad:
             out["tips_ladder"] = _num(lad["annual"], "tips_ladder.annual")
         if "years" in lad:

@@ -349,7 +349,7 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         pricing = "today's curve" if cfg.ladder_curve else f"{cfg.ladder_yield:.2%} real"
         wd += (
             f" · TIPS rungs paying ${result.ladder_annual:,.0f}/yr "
-            f"({min(cfg.ladder_years or cfg.years, cfg.years)}y at {pricing})"
+            f"({cfg.ladder_years or cfg.years}y at {pricing})"
         )
     kinds_present = (
         {a.kind for a in cfg.accounts} if cfg.accounts else {cfg.account}
@@ -397,10 +397,15 @@ def print_summary(result: SimResult, real: bool = True) -> None:
     )
     if cfg.withdrawal.kind != "none":
         if lad_annual:
+            lad_yrs = (
+                cfg.ladder.years if cfg.ladder is not None
+                else (cfg.ladder_years or cfg.years)
+            )
+            floor_span = f" through year {lad_yrs}" if lad_yrs < cfg.years else ""
             print(
                 f"  Success rate (full income maintained): {s['success_rate']:.1%}"
                 f"  — worst case falls back to the ${lad_annual:,.0f}/yr "
-                "ladder floor, not $0"
+                f"ladder floor{floor_span}, not $0"
             )
         else:
             print(f"  Success rate (never depleted): {s['success_rate']:.1%}")
@@ -419,6 +424,12 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         med_wd = float(np.median(result.total_withdrawn_real)) + ladder_income
         label = "incl. ladder" if ladder_income else "real"
         print(f"  Median total income withdrawn ({label}): {_dollars(med_wd)}")
+    if result.total_unmet_real is not None and np.any(result.total_unmet_real > 1.0):
+        hit = result.total_unmet_real > 1.0
+        print(
+            f"  Paths with unmet spending: {hit.mean():.1%}; median shortfall "
+            f"among them {_dollars(float(np.median(result.total_unmet_real[hit])))}"
+        )
     if result.total_tax_real is not None and result.total_tax_real.any():
         print(
             f"  Median total taxes paid (real): "
