@@ -50,20 +50,21 @@ inflation-adjusted 4% a year — does the money last 30 years?
   of initial (inflation-adjusted) · taxable, federal brackets (single filer, 2026 law,
   indexed) + 5% state · quarterly rebalancing · 10,000 bootstrap paths (block=24mo) ·
   history 1960-01–2026-06
-  Success rate (never depleted): 92.1%
-  Failed paths (7.9%): earliest failure year 13, median year 25, 90% fail after year 20
+  Success rate (never depleted): 91.7%
+  Failed paths (8.3%): earliest failure year 13, median year 25, 90% fail after year 19
   Median total income withdrawn (real): $1.2M
-  Median total taxes paid (real): $176k
-  First-5-years market: explains 20% of terminal-wealth variance; failure rate 29.2%
-  after a worst-quintile start vs 7.9% overall; 74% of failures began with one
+  Median total taxes paid (real): $169k
+  First-5-years market: explains 22% of terminal-wealth variance among surviving
+  paths; failure rate 29.6% after a worst-quintile start vs 8.3% overall; 71%
+  of failures began with one
   Terminal wealth (real):
     5th pct           $0
-    25th pct       $605k
-    median        $1.37M
-    75th pct       $2.3M
-    95th pct      $4.35M
-  Median real growth rate: 1.33%/yr
-  Chance of ending below start (real): 38.4%
+    25th pct       $565k
+    median         $1.3M
+    75th pct      $2.25M
+    95th pct      $4.33M
+  Median real growth rate: 0.89%/yr
+  Chance of ending below start (real): 39.8%
 ```
 
 Each run also writes a chart (percentile fan, solvency curve, terminal-wealth
@@ -357,7 +358,7 @@ allocation rules, and `--tips-ladder` remain single-account features for now.
 | `us_small_cap` | 1926+ | bottom 30% by market cap, value-weighted (Ken French) |
 | `intl_equities` | 1960+ | reconstructed 8-country composite (1960–85), AQR Global ex USA (1986–90), Ken French Developed ex US (1990+) |
 | `us_bonds_10yr` | 1953+ | 10-yr Treasury total return derived from FRED GS10 yields |
-| `muni_bonds` | 1953+ | Bond Buyer GO-20 yields priced at 10y maturity (vol-matched to MUB) through 2007, observed MUB ETF total returns after |
+| `muni_bonds` | 1953+ | Bond Buyer GO-20 yields priced at their 20y maturity through 2007, observed MUB ETF total returns after |
 | `cash` | 1926+ | 1-month T-bill (Ken French) |
 
 US CPI (FRED `CPIAUCSL`) is carried alongside and sampled jointly, driving
@@ -497,13 +498,10 @@ print(f"success: {result.success_rate:.1%}")
 This is a research toy, not financial advice. Bootstrapping assumes the future
 is drawn from the same distribution as 1960–present; it ignores mean reversion
 beyond the block length, and fees default to zero (set `--fees` to yours).
-The yield-derived bond series carry known conventions worth knowing: the
-pricing approximation runs ~15–20bp/yr hot versus exact repricing (one-signed,
-so derived Treasury/muni history is slightly flattered), and the pre-2007 muni
-series earns 20-year-yield carry while being priced at 10-year duration — both
-give fixed-income-heavy allocations a modest structural tailwind. A taxable
-`--pension` in a household holding only Roth/529 accounts goes untaxed (no tax
-regime exists to settle it). The bond and muni series are derived
+Yield-derived bond returns use exact repricing of an aged annual-coupon par
+bond. The muni series is self-consistent (GO-20 yields priced at their
+20-year maturity) but changes duration at the 2007 splice onto MUB (~6y) —
+pre-2007 munis are correspondingly more volatile than the fund era. The bond and muni series are derived
 from constant-maturity yields via a standard pricing approximation. Success
 rates above ~95% are not distinguishable from each other given history this
 short.

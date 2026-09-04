@@ -560,8 +560,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as e:
         print(f"error: {e}")
         return 2
-    if no_tax and args.pension:
-        print("note: taxes are off for this account; --pension is treated like --income")
+    # Tax-free accounts drop the tax settings - unless a pension needs the
+    # regime to be taxed through.
+    strip_tax = no_tax and not args.pension
 
     if args.withdraw and ":" in args.withdraw:
         if args.withdraw_strategy != "fixed-real":
@@ -658,21 +659,21 @@ def main(argv: list[str] | None = None) -> int:
             early_penalty=not args.no_early_penalty,
             income=tuple(streams) or None,
             expenses=tuple(expenses) or None,
-            tax_rate=0.0 if no_tax else args.tax_rate / 100.0,
+            tax_rate=0.0 if strip_tax else args.tax_rate / 100.0,
             tax_ordinary=(
-                None if no_tax or args.tax_ordinary is None else args.tax_ordinary / 100.0
+                None if strip_tax or args.tax_ordinary is None else args.tax_ordinary / 100.0
             ),
             # Default: fully taxable under federal brackets (as distribution
             # taxation for traditional accounts). Flat rates or a tax-free
             # account switch that off.
             tax_brackets=(
                 None
-                if no_tax or args.tax_rate or args.tax_ordinary is not None
+                if strip_tax or args.tax_rate or args.tax_ordinary is not None
                 else args.filing
             ),
             cost_basis_start=args.cost_basis,
             rebalance_months=args.rebalance,
-            state_tax=0.0 if no_tax else args.state_tax / 100.0,
+            state_tax=0.0 if strip_tax else args.state_tax / 100.0,
             return_adjustments=return_adjustments,
             fee_annual=args.fees / 100.0,
             contribution_monthly=args.contribute,

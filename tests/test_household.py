@@ -424,3 +424,22 @@ def test_median_cagr_counts_depleted_paths():
     r = simulate(panel, cfg(
         initial=1000.0, withdrawal=Withdrawal("fixed_real", amount=5000.0)))
     assert summarize(r)["median_cagr"] == -1.0  # every path depletes
+
+
+def test_pension_taxed_in_tax_free_household():
+    panel = make_panel()
+    c = cfg(
+        accounts=(Account("roth", 1000.0),),
+        tax_ordinary=0.25,
+        income=(IncomeStream(120.0, taxable=True),),
+    )
+    r = simulate(panel, c)
+    # 10/mo pension invested; 25% ordinary tax settled annually from the roth.
+    assert np.allclose(r.total_tax_real, 30.0)
+    assert np.allclose(r.balance[:, -1], 1000.0 + 120.0 - 30.0)
+
+
+def test_tax_free_household_still_rejects_settings_without_pension():
+    panel = make_panel()
+    with pytest.raises(ValueError, match="tax-free"):
+        simulate(panel, cfg(accounts=(Account("roth", 1000.0),), tax_ordinary=0.25))

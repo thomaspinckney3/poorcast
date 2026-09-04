@@ -215,11 +215,11 @@ def fetch_muni_returns(refresh: bool = False) -> tuple[pd.Series, pd.Series]:
     """Monthly muni total returns and income yields: derived from Bond Buyer
     GO-20 yields (FRED MSLB20, 1953-2007), observed MUB ETF from 2007 on."""
     yields = fetch_fred("MSLB20", refresh)  # percent, monthly, ends 2016-09
-    # Priced at 10-year maturity: the GO-20 index yields 20-year paper, but
-    # investable muni funds run much shorter duration - 10y matches MUB's
-    # realized volatility in the 2007-16 overlap (5.6% vs 5.4% annualized)
-    # and the us_bonds_10yr series' duration.
-    derived = bond_returns_from_yields(yields, maturity_years=10).rename("muni_bonds")
+    # Priced at the index's actual 20-year maturity: earning 20-year yield
+    # carry on a shorter-priced bond would systematically flatter the series.
+    # The cost of consistency is a duration break at the 2007 MUB splice
+    # (MUB runs ~6y duration), documented in the README.
+    derived = bond_returns_from_yields(yields, maturity_years=20).rename("muni_bonds")
     derived_income = (yields.shift(1) / 100 / 12).dropna()
     mub = fetch_yahoo_monthly("MUB", refresh)
     splice = mub.index.min()
@@ -233,19 +233,20 @@ def fetch_muni_returns(refresh: bool = False) -> tuple[pd.Series, pd.Series]:
 def bond_returns_from_yields(yields: pd.Series, maturity_years: int = 10) -> pd.Series:
     """Monthly total returns of a constant-maturity par bond from a yield series.
 
-    Standard approximation: each month buy an N-year par bond at last month's
-    yield; a month later it is an (N - 1/12)-year bond priced at this month's
-    yield, plus one month of coupon accrual. Prices use the annual-coupon
-    closed form with fractional maturity.
+    Each month buy an N-year annual-coupon par bond (coupon = last month's
+    yield); a month later value it exactly: the dirty price discounts every
+    remaining cash flow (coupons at 11/12, 1+11/12, ..., principal at
+    N - 1/12 years) at this month's yield, which factors as
+    (1+y)^(1/12) x the at-issue price at the new yield. Return = price - 1.
+    (An earlier simple-accrual approximation ran ~15-20bp/yr hot.)
     """
     y = yields / 100.0
-    y_prev = y.shift(1)
-    n = maturity_years - 1 / 12
-    coupon = y_prev
-    # price of bond with annual coupon c, yield y, maturity n years (per $1 face)
+    coupon = y.shift(1)
+    n = maturity_years
+    # at-issue price of bond with annual coupon c, yield y, maturity n years
     with np.errstate(invalid="ignore"):
-        price = coupon / y * (1 - (1 + y) ** -n) + (1 + y) ** -n
-    ret = price + coupon / 12 - 1
+        p0 = coupon / y * (1 - (1 + y) ** -n) + (1 + y) ** -n
+        ret = (1 + y) ** (1 / 12) * p0 - 1
     return ret.rename("us_bonds_10yr").dropna()
 
 

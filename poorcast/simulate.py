@@ -418,7 +418,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         or ord_rate > 0
         or cfg.state_tax > 0
     )
-    if tax_i is None and not trad and any_tax_setting:
+    has_taxable_income = any(s.taxable for s in cfg.income or ())
+    # A household of only tax-free accounts still owes ordinary tax on
+    # taxable outside income (pensions), so a tax regime is allowed then.
+    pension_only = tax_i is None and not trad and any_tax_setting and has_taxable_income
+    if tax_i is None and not trad and any_tax_setting and not has_taxable_income:
         label = cfg.account if not multi else "roth/529-only households"
         raise ValueError(f"{label} accounts are tax-free; clear the tax settings")
     if trad:
@@ -692,7 +696,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         if has_acct_sched:
             total_withdrawn += pre_total
             total_withdrawn_real += pre_total / cum_inflation[:, m]
-        if taxed or trad:
+        if taxed or trad or pension_only:
             other_ord_acc += income_taxed_real_m[m] * cum_inflation[:, m]
 
         # Waterfall: draw from accounts in withdraw_order until the need is met.
@@ -929,6 +933,22 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             paid, from_trad_pay = collect(tax, trad_i)
             total_tax_real += paid / cum_inflation[:, m + 1]
             dist_acc = from_trad_pay  # the IRA-paid portion is a distribution
+
+        # Pension-only settlement: tax-free accounts, but taxable outside
+        # income still runs through the active regime, annually.
+        if pension_only and annual:
+            if cfg.tax_brackets is not None:
+                from .tax import annual_tax
+
+                tax = annual_tax(
+                    0.0, 0.0, cfg.tax_brackets, cum_inflation[:, m + 1],
+                    state_rate=cfg.state_tax, other_ordinary=other_ord_acc,
+                )
+            else:
+                tax = (ord_rate + cfg.state_tax) * other_ord_acc
+            other_ord_acc = np.zeros(n_paths)
+            paid, _ = collect(tax, draw_order[0])
+            total_tax_real += paid / cum_inflation[:, m + 1]
 
         # Penalties (early withdrawals, non-qualified 529 earnings) settle
         # annually, paid from the taxable account first, then the others;

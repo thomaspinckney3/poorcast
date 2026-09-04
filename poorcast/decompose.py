@@ -53,9 +53,10 @@ def equity_return_decomposition(
 
     def mid(w):
         a, b = pd.Period(w[0], "M"), pd.Period(w[1], "M")
-        return (a.year + a.month / 12 + b.year + b.month / 12) / 2
+        return pd.Period(ordinal=(a.ordinal + b.ordinal + 1) // 2, freq="M")
 
-    years = mid(end_window) - mid(start_window)
+    mid_a, mid_b = mid(start_window), mid(end_window)
+    years = (mid_b.ordinal - mid_a.ordinal) / 12
 
     e_real = sh["E"] * sh["CPI"].iloc[-1] / sh["CPI"]
     pe = sh["P"] / sh["E"]
@@ -68,8 +69,6 @@ def equity_return_decomposition(
     margin_growth = float(np.log(avg(margin, end_window) / avg(margin, start_window)) / years)
 
     eq = load_panel()["us_equities"]
-    mid_a = pd.Period(int(mid(start_window)), freq="M") + 6
-    mid_b = pd.Period(int(mid(end_window)), freq="M") + 6
     actual = float(np.log1p(eq[mid_a:mid_b]).mean() * 12)
 
     total = div_yield + inflation + eps_growth + multiple
