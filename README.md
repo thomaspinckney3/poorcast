@@ -238,6 +238,22 @@ poorcast run --allocation us_equities=100 --withdraw 4% \
     --multiple-expansion 0 --horizons 30
 ```
 
+**Valuation scenarios**: `--pe-path "30@0,20@10,30@40"` (or a `pe_path`
+table in config) drives the multiple-expansion component of US equity
+returns along an assumed P/E path — piecewise-linear in log-P/E, net of the
+historical rate. Adding `--pe-conditioned` goes further than a mean shift:
+bootstrap blocks are drawn from historical months whose Shiller P/E
+resembles the assumed level at that point of the path (Gaussian kernel,
+`--pe-bandwidth`, default 0.15 log units), and equity returns are
+re-centered so the path's multiple change replaces the sampled regimes'
+own. Conditioned runs inherit the *dynamics* (volatility, correlations,
+inflation regime) of comparable valuation eras — which also means they
+inherit those eras' company: since 1960, high-CAPE months are almost
+entirely 1995–2021, so a conditioned high-valuation scenario largely
+excludes 1970s-style stagflation. That is history's honest answer, not a
+neutral one. `--adjust asset=-1.1,...` (or `[adjustments]`) shifts any
+asset's mean, e.g. anchoring bond returns at today's yields.
+
 Other useful knobs: `--fees 1` (annual management/expense drag in %; historical
 returns are index returns, so the default is free investing — a 1% advisor fee
 visibly moves 30-year success rates), `--filing married`, `--state-tax 0`,

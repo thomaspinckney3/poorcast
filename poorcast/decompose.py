@@ -100,3 +100,14 @@ def print_decomposition(d: dict) -> None:
     print(f"    P/E multiple expansion           {d['multiple_expansion']:+.2%}")
     print(f"    (components sum {d['sum_of_components']:+.2%}, residual "
           f"{d['residual']:+.2%}: log/arithmetic cross-terms and S&P-vs-total-market wedge)")
+
+
+def shiller_pe_series(refresh: bool = False) -> pd.Series:
+    """CAPE-style monthly valuation state: real price over trailing 5-year
+    average real earnings (Shiller data). Used for valuation-conditioned
+    sampling."""
+    sh = _shiller_pde(refresh)
+    scale = sh["CPI"].iloc[-1] / sh["CPI"]
+    p_real = sh["P"] * scale
+    e_real = (sh["E"] * scale).rolling(60).mean()
+    return (p_real / e_real).dropna().rename("shiller_pe")

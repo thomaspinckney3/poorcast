@@ -173,6 +173,19 @@ class SimConfig:
     ladder_yield: float = 0.02
     ladder_curve: dict[int, float] | None = None
     ladder_years: int | None = None
+    # Valuation-conditioned sampling (bootstrap mode only): block starts are
+    # drawn with Gaussian-kernel weights in log-state space, matching each
+    # block's historical state (state_series, e.g. Shiller P/E by month) to
+    # the assumed state at that point of the simulation (state_path, one
+    # level per simulation month). Blocks then carry the DYNAMICS - vol,
+    # correlations, inflation regime - of comparable valuation eras, and
+    # regimes as long as the path persist beyond the block length. For
+    # assets in state_adjust_assets, returns are re-centered so the path's
+    # log-state drift replaces the sampled months' conditional drift.
+    state_series: "object | None" = None  # pd.Series, monthly PeriodIndex
+    state_path: "object | None" = None  # (years*12,) assumed state levels
+    state_bandwidth: float = 0.15  # kernel width in log-state units
+    state_adjust_assets: tuple[str, ...] | None = None
     age: int | None = None  # age at t=0; enables age-based features (RMDs)
     # 10% early-withdrawal penalty before age 59.5 (needs `age`): applies to
     # traditional draws and to the earnings portion of roth draws (beyond the
@@ -279,8 +292,33 @@ def _historical_matrix(
     return window[assets].to_numpy(), window["inflation"].to_numpy(), window.index, income
 
 
-def _sample_months(cfg: SimConfig, t_hist: int, rng: np.random.Generator) -> np.ndarray:
-    """Month indices per path: circular block bootstrap, or all historical windows."""
+def _slot_weights(
+    state_log: np.ndarray, path_log: np.ndarray, block: int, n_blocks: int, bw: float
+) -> np.ndarray:
+    """(n_blocks, t_hist) block-start weights: Gaussian kernel in log-state."""
+    W = np.empty((n_blocks, len(state_log)))
+    for b in range(n_blocks):
+        target = path_log[min(b * block, len(path_log) - 1)]
+        w = np.exp(-0.5 * ((state_log - target) / bw) ** 2)
+        w[~np.isfinite(w)] = 0.0
+        s = w.sum()
+        if s <= 0:
+            raise ValueError(
+                f"no historical months have state data near the assumed level "
+                f"{np.exp(target):.1f} (block {b})"
+            )
+        W[b] = w / s
+    return W
+
+
+def _sample_months(
+    cfg: SimConfig,
+    t_hist: int,
+    rng: np.random.Generator,
+    slot_weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """Month indices per path: circular block bootstrap (optionally with
+    state-conditioned block starts), or all historical windows."""
     n_months = cfg.years * 12
     if cfg.mode == "historical":
         n_windows = t_hist - n_months + 1
@@ -292,7 +330,12 @@ def _sample_months(cfg: SimConfig, t_hist: int, rng: np.random.Generator) -> np.
         return starts + np.arange(n_months)[None, :]
     block = max(1, min(cfg.block_months, t_hist))
     n_blocks = -(-n_months // block)  # ceil
-    starts = rng.integers(0, t_hist, size=(cfg.n_sims, n_blocks))
+    if slot_weights is None:
+        starts = rng.integers(0, t_hist, size=(cfg.n_sims, n_blocks))
+    else:
+        starts = np.empty((cfg.n_sims, n_blocks), dtype=np.int64)
+        for b in range(n_blocks):
+            starts[:, b] = rng.choice(t_hist, size=cfg.n_sims, p=slot_weights[b])
     offsets = np.arange(block)
     idx = (starts[:, :, None] + offsets[None, None, :]) % t_hist  # circular
     return idx.reshape(cfg.n_sims, -1)[:, :n_months]
@@ -535,14 +578,50 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         panel, assets, cfg, need_income=taxed
     )
     rng = np.random.default_rng(cfg.seed)
-    months = _sample_months(cfg, len(window), rng)
+    W = None
+    if cfg.state_series is not None:
+        if cfg.mode != "bootstrap":
+            raise ValueError("state-conditioned sampling needs bootstrap mode")
+        if cfg.state_path is None:
+            raise ValueError("state_series needs a state_path (assumed levels)")
+        path_lvl = np.asarray(cfg.state_path, dtype=float)
+        if len(path_lvl) != cfg.years * 12:
+            raise ValueError(
+                f"state_path has length {len(path_lvl)}, expected {cfg.years * 12}"
+            )
+        if not cfg.state_bandwidth > 0:
+            raise ValueError("state_bandwidth must be positive")
+        with np.errstate(invalid="ignore", divide="ignore"):
+            state_log = np.log(cfg.state_series.reindex(window).to_numpy(dtype=float))
+            path_log = np.log(path_lvl)
+        block = max(1, min(cfg.block_months, len(window)))
+        n_blocks = -(-(cfg.years * 12) // block)
+        W = _slot_weights(state_log, path_log, block, n_blocks, cfg.state_bandwidth)
+    months = _sample_months(cfg, len(window), rng, slot_weights=W)
     n_paths, n_months = months.shape
+
+    # State-conditioned drift re-centering: replace each block's conditional
+    # historical log-state drift with the assumed path's, so the path's
+    # multiple expansion isn't double-counted on top of what the sampled
+    # regimes already did.
+    eff_adj: dict = dict(cfg.return_adjustments or {})
+    if W is not None and cfg.state_adjust_assets:
+        drift_hist = np.zeros(len(window))
+        d = (state_log[1:] - state_log[:-1]) * 12.0
+        drift_hist[:-1] = np.nan_to_num(d)
+        cond = W @ drift_hist  # (n_blocks,) conditional drift per slot
+        path_drift = np.zeros(n_months)
+        path_drift[:-1] = (path_log[1:] - path_log[:-1]) * 12.0
+        adj_state = path_drift - cond[np.arange(n_months) // block]
+        for a in cfg.state_adjust_assets:
+            if a in assets:
+                eff_adj[a] = eff_adj.get(a, 0.0) + adj_state
 
     if not 0 <= cfg.fee_annual < 0.1:
         raise ValueError(f"fee_annual must be in [0, 0.1), got {cfg.fee_annual}")
     path_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
-    if cfg.return_adjustments or cfg.fee_annual:
-        vals = [(cfg.return_adjustments or {}).get(a, 0.0) for a in assets]
+    if eff_adj or cfg.fee_annual:
+        vals = [eff_adj.get(a, 0.0) for a in assets]
         if any(np.ndim(v) > 0 for v in vals):
             # Per-month adjustment paths (each scalar or length-n_months).
             adj = np.zeros((n_months, len(assets)))

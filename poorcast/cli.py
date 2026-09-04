@@ -421,6 +421,24 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "Supersedes any multiple-expansion setting",
     )
     r.add_argument(
+        "--pe-conditioned",
+        action="store_true",
+        help="with --pe-path: instead of a mean shift, draw bootstrap blocks "
+        "from historical months whose Shiller P/E resembles the assumed "
+        "level at that point of the path (Gaussian kernel in log-P/E), and "
+        "re-center US equity returns so the path's multiple expansion "
+        "replaces the sampled regimes' own. Blocks then carry the "
+        "volatility/correlation/inflation dynamics of comparable eras",
+    )
+    r.add_argument(
+        "--pe-bandwidth",
+        type=float,
+        default=0.15,
+        metavar="LOGW",
+        help="kernel width for --pe-conditioned, in log-P/E units "
+        "(default 0.15 = roughly +/-15%%)",
+    )
+    r.add_argument(
         "--adjust",
         default=None,
         metavar="ASSET=PCT,...",
@@ -759,7 +777,23 @@ def main(argv: list[str] | None = None) -> int:
                 withdrawal, rate=0.0, amount=max(target - ladder.annual, 0.0)
             )
         run_adjustments = return_adjustments
-        if pe_points:
+        state_kw = {}
+        if pe_points and args.pe_conditioned:
+            import numpy as np
+
+            from .decompose import shiller_pe_series
+
+            rates = pe_path_rates(pe_points, years * 12)
+            levels = pe_points[0][1] * np.exp(np.concatenate(
+                [[0.0], np.cumsum(rates[:-1] / 12.0)]
+            ))
+            state_kw = dict(
+                state_series=shiller_pe_series(),
+                state_path=levels,
+                state_bandwidth=args.pe_bandwidth,
+                state_adjust_assets=("us_equities", "us_small_cap"),
+            )
+        elif pe_points:
             arr = pe_path_rates(pe_points, years * 12) - hist_me
             run_adjustments = dict(return_adjustments or {})
             for a in ("us_equities", "us_small_cap"):
@@ -803,6 +837,7 @@ def main(argv: list[str] | None = None) -> int:
             rebalance_months=args.rebalance,
             state_tax=0.0 if strip_tax else args.state_tax / 100.0,
             return_adjustments=run_adjustments,
+            **state_kw,
             fee_annual=args.fees / 100.0,
             contribution_monthly=args.contribute,
             block_months=args.block,

@@ -136,6 +136,7 @@ TOP_KEYS = {
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
     "taxes", "tips_ladder", "simulation", "output",
     "account", "withdraw_order", "adjustments", "pe_path",
+    "pe_conditioned", "pe_bandwidth",
 }
 OPTIMIZE_KEYS = {"equity", "ladder"}
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
@@ -217,6 +218,11 @@ def load_config(path: str) -> dict:
                 f"{_num(p['pe'], where + '.pe')!r}@{_num(p['year'], where + '.year')!r}"
             )
         out["pe_path"] = ",".join(parts)
+
+    if "pe_conditioned" in raw:
+        out["pe_conditioned"] = _bool(raw["pe_conditioned"], "pe_conditioned")
+    if "pe_bandwidth" in raw:
+        out["pe_bandwidth"] = _num(raw["pe_bandwidth"], "pe_bandwidth")
 
     # Per-asset annual return adjustments in %/yr (e.g. anchoring bond
     # returns at today's yields): [adjustments] us_bonds_10yr = -1.1

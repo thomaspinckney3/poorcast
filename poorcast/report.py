@@ -376,6 +376,11 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             for k, v in cfg.return_adjustments.items()
         )
         wd += f" · return adjustment: {adjs}"
+    if cfg.state_series is not None:
+        wd += (
+            f" · valuation-conditioned sampling "
+            f"(log-P/E kernel bw {cfg.state_bandwidth:g})"
+        )
     if cfg.fee_annual:
         wd += f" · fees {cfg.fee_annual:.2%}/yr"
     rebal = f"rebalancing every {cfg.rebalance_months} months"
