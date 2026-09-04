@@ -273,3 +273,9 @@ def test_spend_decline_requires_fixed_real():
     panel = make_panel()
     with pytest.raises(ValueError, match="fixed_real"):
         simulate(panel, cfg(withdrawal=Withdrawal("none", decline=0.01)))
+
+
+def test_parse_schedule_years_from_start_with_age_zero():
+    # Without --age the CLI passes age=0: numbers are simulation years.
+    s = parse_schedule("20000:2-6,100000:6-18", age=0, initial=1e6)
+    assert s == ((24, 20000.0), (72, 100000.0), (216, 0.0))

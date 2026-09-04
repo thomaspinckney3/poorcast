@@ -114,8 +114,10 @@ poorcast run --allocation us_equities=60,us_bonds_10yr=40 --age 65 \
     --withdraw "90000:65-75,70000:75+" --expense 50000@70 --horizons 30
 ```
 
-Schedule segments are `AMOUNT:FROM-TO` or `AMOUNT:FROM+` (ages; amounts may be
-percents of the initial balance); `--expense` adds one-time real outlays. For
+Schedule segments are `AMOUNT:FROM-TO` or `AMOUNT:FROM+`; the numbers are ages
+when `--age` is given, otherwise **years from the start of the simulation**
+(the same rule applies to every `@N` anchor and account schedule). Amounts may
+be percents of the initial balance. `--expense` adds one-time real outlays. For
 a smooth glide instead of steps, `--spend-decline 1` shrinks real spending 1%
 a year, compounding (Blanchett's measured "retirement smile" downslope is
 roughly that); `--spend-decline 1@75` starts the decline at 75. It composes

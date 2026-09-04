@@ -68,9 +68,11 @@ def parse_at_age(text: str) -> tuple[float, int | None]:
 def parse_schedule(text: str, age: int, initial: float) -> tuple[tuple[int, float], ...]:
     """Age-varying spending: '80000:65-75,60000:75+' -> ((start_month, annual), ...).
 
-    Each segment is AMOUNT:FROM-TO or AMOUNT:FROM+ (ages; FROM inclusive, TO
-    exclusive). AMOUNT may be a percent of the initial balance ('4%').
-    Segments may not overlap; uncovered ages spend nothing.
+    Each segment is AMOUNT:FROM-TO or AMOUNT:FROM+ (FROM inclusive, TO
+    exclusive). The numbers are ages anchored by `age`; pass age=0 to treat
+    them as years from the start of the simulation. AMOUNT may be a percent
+    of the initial balance ('4%'). Segments may not overlap; uncovered
+    stretches spend nothing.
     """
     segs = []
     for part in text.split(","):
@@ -176,8 +178,9 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "--withdraw",
         default=None,
         help="annual withdrawal: '3%%' (percent rule), '40000' (dollars/yr, "
-        "inflation-adjusted), or with --age an age-varying schedule like "
-        "'80000:65-75,60000:75+' (amounts may also be percents of initial)",
+        "inflation-adjusted), or a varying schedule like "
+        "'80000:65-75,60000:75+' - the numbers are ages with --age, else "
+        "years from the start (amounts may also be percents of initial)",
     )
     r.add_argument(
         "--age",
@@ -203,7 +206,8 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         metavar="ANNUAL[@AGE]",
         help="outside income in today's dollars/yr, treated as after-tax "
         "(approximates Social Security): e.g. --income 30000@67. Offsets "
-        "withdrawals; any surplus is invested. Repeatable; @AGE needs --age",
+        "withdrawals; any surplus is invested. Repeatable; @N is an age "
+        "with --age, else a year from the start",
     )
     r.add_argument(
         "--pension",
@@ -218,8 +222,9 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="AMOUNT@AGE",
-        help="one-time expense in today's dollars at an age (a roof, a car, "
-        "a wedding): e.g. --expense 50000@70. Repeatable; needs --age",
+        help="one-time expense in today's dollars (a roof, a car, a wedding): "
+        "e.g. --expense 50000@70. Repeatable; @N is an age with --age, else "
+        "a year from the start",
     )
     r.add_argument(
         "--withdraw-strategy",
@@ -469,11 +474,8 @@ def main(argv: list[str] | None = None) -> int:
             a = dict(a)
             sched_text = a.pop("schedule", None)
             if sched_text is not None:
-                if args.age is None:
-                    print("error: account schedules need --age (ages anchor them)")
-                    return 2
                 try:
-                    a["schedule"] = parse_schedule(sched_text, args.age, a["balance"])
+                    a["schedule"] = parse_schedule(sched_text, args.age or 0, a["balance"])
                 except ValueError as e:
                     print(f"error: {e}")
                     return 2
@@ -532,10 +534,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     def start_month(at_age: int | None, flag: str) -> int:
+        # With --age the @N anchors are ages; without it, years from start.
         if at_age is None:
             return 0
         if args.age is None:
-            raise ValueError(f"{flag} with @AGE needs --age")
+            return max(at_age * 12, 0)
         return max((at_age - args.age) * 12, 0)
 
     streams: list[IncomeStream] = []
@@ -549,9 +552,11 @@ def main(argv: list[str] | None = None) -> int:
             streams.append(IncomeStream(amt, start_month(at, "--pension"), taxable=True))
         for text in args.expense:
             amt, at = parse_at_age(text)
-            if at is None or args.age is None:
-                raise ValueError("--expense needs AMOUNT@AGE and --age")
-            expenses.append((max((at - args.age) * 12, 0), amt))
+            if at is None:
+                raise ValueError(
+                    "--expense needs AMOUNT@N (an age with --age, else a year)"
+                )
+            expenses.append((start_month(at, "--expense"), amt))
     except ValueError as e:
         print(f"error: {e}")
         return 2
@@ -559,15 +564,13 @@ def main(argv: list[str] | None = None) -> int:
         print("note: taxes are off for this account; --pension is treated like --income")
 
     if args.withdraw and ":" in args.withdraw:
-        if args.age is None:
-            print("error: withdrawal schedules need --age")
-            return 2
         if args.withdraw_strategy != "fixed-real":
             print("error: withdrawal schedules only work with the fixed-real strategy")
             return 2
         try:
             withdrawal = Withdrawal(
-                "fixed_real", schedule=parse_schedule(args.withdraw, args.age, args.initial)
+                "fixed_real",
+                schedule=parse_schedule(args.withdraw, args.age or 0, args.initial),
             )
         except ValueError as e:
             print(f"error: {e}")
