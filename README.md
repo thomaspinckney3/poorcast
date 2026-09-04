@@ -524,6 +524,7 @@ pre-liquidation.
 | `poorcast run` | run a simulation (see `run --help` for all flags) |
 | `poorcast decompose` | split historical US equity returns into dividends, inflation, real EPS growth (margin vs underlying), and P/E multiple expansion |
 | `poorcast validate-intl` | out-of-sample check of the pre-1986 international reconstruction |
+| `poorcast ladder` | generate a TIPS ladder buy list (rung face values by maturity) from `--annual`/`--cost` + pricing, or from a plan's `--config` |
 
 ## Python API
 

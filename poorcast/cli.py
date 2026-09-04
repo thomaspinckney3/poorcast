@@ -169,6 +169,27 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "against observed 1986-1995 data",
     )
 
+    lad = sub.add_parser(
+        "ladder",
+        help="generate a TIPS ladder buy list (rung face values by maturity)",
+    )
+    lad.add_argument("--config", metavar="FILE",
+                     help="emit the ladder(s) implied by a plan's tips_ladder "
+                     "allocations")
+    lad.add_argument("--annual", type=float, help="target real income per year")
+    lad.add_argument("--cost", type=float, help="total dollars to invest "
+                     "(solves the annual income instead)")
+    lad.add_argument("--years", type=int, default=30, help="ladder length (default 30)")
+    lad.add_argument("--yield", dest="lyield", type=float, default=2.0,
+                     metavar="PCT", help="flat real yield %% (default 2.0)")
+    lad.add_argument("--curve", action="store_true",
+                     help="price off today's FRED TIPS real-yield curve")
+    lad.add_argument("--tail", type=float, default=None, metavar="PCT",
+                     help="real yield %% for rungs beyond 30y (default: "
+                     "bridge-locked at the 30y point)")
+    lad.add_argument("--taxable", action="store_true",
+                     help="note the ladder as taxable (phantom income)")
+
     r = sub.add_parser("run", help="run a simulation")
     r.add_argument(
         "--config",
@@ -496,6 +517,71 @@ def _config_path(argv: list[str]) -> str | None:
     return None
 
 
+
+def _run_ladder(args) -> int:
+    """poorcast ladder: print the rung-by-rung buy list for a ladder, either
+    from explicit --annual/--cost + pricing, or from a plan config's
+    tips_ladder allocations."""
+    from .ladder import build_ladder, build_ladder_curve, current_real_curve, format_ladder
+
+    curve = current_real_curve() if args.curve else None
+    tail = None if args.tail is None else args.tail / 100.0
+
+    def one(annual=None, cost=None, years=None, taxable=False, label=""):
+        yrs = years or args.years
+        if curve is not None:
+            unit = build_ladder_curve(1.0, yrs, curve, taxable=taxable, tail_yield=tail)
+            a = annual if annual is not None else cost / unit.cost
+            spec = build_ladder_curve(a, yrs, curve, taxable=taxable, tail_yield=tail)
+        else:
+            unit = build_ladder(1.0, yrs, args.lyield / 100.0, taxable=taxable)
+            a = annual if annual is not None else cost / unit.cost
+            spec = build_ladder(a, yrs, args.lyield / 100.0, taxable=taxable)
+        print(format_ladder(spec, label=label))
+        return spec
+
+    if args.config:
+        from .config import ConfigError, load_config
+
+        try:
+            cfg = load_config(args.config)
+        except ConfigError as e:
+            print(f"error: {e}")
+            return 2
+        accounts = cfg.get("accounts")
+        if not accounts:
+            print("error: --config needs [[account]] sections with a tips_ladder "
+                  "allocation (or use --annual/--cost directly)")
+            return 2
+        # Config pricing overrides the flag defaults.
+        if cfg.get("tips_ladder_curve"):
+            curve = current_real_curve()
+        elif "tips_ladder_yield" in cfg:
+            args.lyield = cfg["tips_ladder_yield"]
+        if "tips_ladder_tail" in cfg:
+            tail = cfg["tips_ladder_tail"] / 100.0
+        lyrs = cfg.get("ladder_years") or int(str(cfg.get("horizons", "30")).split(",")[0])
+        found = False
+        for a in accounts:
+            wl = (a.get("allocation") or {}).get("tips_ladder", 0.0)
+            if wl > 0:
+                found = True
+                one(cost=wl * a["balance"], years=lyrs,
+                    taxable=(a["kind"] == "taxable"),
+                    label=f"{a['kind']} account, ${wl * a['balance']:,.0f}")
+                print()
+        if not found:
+            print("no tips_ladder allocations found in the config")
+            return 2
+        return 0
+
+    if (args.annual is None) == (args.cost is None):
+        print("error: give exactly one of --annual or --cost (or --config)")
+        return 2
+    one(annual=args.annual, cost=args.cost, taxable=args.taxable)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:]) if argv is None else list(argv)
     # --config values become argparse defaults, so explicit flags override.
@@ -540,6 +626,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"    tracking error:       {rep['tracking_error_ann']:.2%}/yr\n")
         return 0
+
+    if args.command == "ladder":
+        return _run_ladder(args)
 
     panel = data_mod.load_panel()
 

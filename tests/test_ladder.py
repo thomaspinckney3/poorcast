@@ -93,3 +93,33 @@ def test_tail_yield_prices_beyond_curve_rungs():
             assert (c[yr:] * f[yr:]).sum() + f[yr] == pytest.approx(100.0)
     assert capped.cost > base.cost
     assert sum(capped.faces[30:]) > sum(base.faces[30:])
+
+
+def test_ladder_rows_deliver_constant_income():
+    from poorcast.ladder import build_ladder, ladder_rows
+
+    spec = build_ladder(40_000.0, 30, 0.02)
+    rows = ladder_rows(spec)
+    assert len(rows) == 30
+    for r in rows:  # every year's total real cash flow equals the target
+        assert r["income"] == pytest.approx(40_000.0)
+    assert sum(r["face"] for r in rows) == pytest.approx(spec.cost)
+
+
+def test_ladder_cli_from_cost_and_config(tmp_path, capsys):
+    from poorcast.cli import main
+
+    assert main(["ladder", "--cost", "1000000", "--years", "20", "--yield", "2"]) == 0
+    assert "TIPS ladder" in capsys.readouterr().out
+
+    cfg = tmp_path / "p.toml"
+    cfg.write_text(
+        "horizons = [30]\n"
+        "[[account]]\ntype='taxable'\nbalance=1_000_000\n"
+        "allocation = { us_equities = 80, tips_ladder = 20 }\n"
+        "[tips_ladder]\nyield = 2.0\n"
+    )
+    assert main(["ladder", "--config", str(cfg)]) == 0
+    out = capsys.readouterr().out
+    assert "taxable account, $200,000" in out
+    assert main(["ladder"]) == 2  # neither annual/cost/config

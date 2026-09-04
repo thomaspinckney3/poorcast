@@ -113,3 +113,47 @@ def current_real_curve(refresh: bool = True) -> dict[float, float]:
         s = pd.read_csv(io.BytesIO(blob), na_values=".").dropna()
         out[mat] = float(s.iloc[-1, 1]) / 100.0
     return out
+
+
+def ladder_rows(spec: "LadderSpec") -> list[dict]:
+    """The rung-by-rung buy list: one row per maturity year with the real
+    face value to purchase, its coupon rate, and the year's total real
+    income (which equals spec.annual for every year by construction)."""
+    faces = np.asarray(spec.faces, dtype=float)
+    coupons = np.asarray(spec.coupons, dtype=float)
+    rows = []
+    for t in range(spec.years):
+        income = float(faces[t] + (coupons[t:] * faces[t:]).sum())
+        rows.append({
+            "year": t + 1,
+            "face": float(faces[t]),
+            "coupon": float(coupons[t]),
+            "income": income,
+        })
+    return rows
+
+
+def format_ladder(spec: "LadderSpec", label: str = "", base_year: int | None = None) -> str:
+    """Human-readable buy list for a ladder."""
+    import datetime
+
+    if base_year is None:
+        base_year = datetime.date.today().year
+    rows = ladder_rows(spec)
+    out = []
+    head = f"TIPS ladder{': ' + label if label else ''}"
+    acct = "taxable" if getattr(spec, "taxable", False) else "tax-deferred"
+    out.append(
+        f"{head} — ${spec.cost:,.0f} cost -> ${spec.annual:,.0f}/yr real for "
+        f"{spec.years}y (cost-weighted real yield {spec.real_yield:.2%}, held {acct})"
+    )
+    out.append(f"  {'matures':>8}  {'real face $':>13}  {'coupon':>7}")
+    for r in rows:
+        out.append(
+            f"  {base_year + r['year']:>8}  {r['face']:>13,.0f}  {r['coupon']:>6.2%}"
+        )
+    out.append(
+        f"  {'TOTAL':>8}  {sum(r['face'] for r in rows):>13,.0f}   "
+        f"(each year delivers ${spec.annual:,.0f} real)"
+    )
+    return "\n".join(out)
