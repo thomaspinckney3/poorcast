@@ -691,6 +691,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             with np.errstate(invalid="ignore", divide="ignore"):
                 scale = np.where(totals[i] > 0, (totals[i] + flow) / totals[i], 0.0)
             prorata_flow(acct, scale)
+        # A path is depleted the first time the household hits zero - whether
+        # a withdrawal drained it here or a later-in-the-month settlement
+        # (taxes, penalties) zeroed it before this check.
         if multi:
             for acct in accts:
                 emptied = acct.holdings.sum(axis=1) <= 1e-9
@@ -699,11 +702,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             house = accts[0].holdings.sum(axis=1)
             for acct in accts[1:]:
                 house = house + acct.holdings.sum(axis=1)
-            newly_dead = alive & (house <= 1e-9)
+            newly_dead = (depleted_month < 0) & (house <= 1e-9)
             depleted_month[newly_dead] = m
         else:
             acct = accts[0]
-            newly_dead = alive & (acct.holdings.sum(axis=1) <= 1e-9)
+            newly_dead = (depleted_month < 0) & (acct.holdings.sum(axis=1) <= 1e-9)
             depleted_month[newly_dead] = m
             acct.holdings[newly_dead] = 0.0
             acct.basis[newly_dead] = 0.0
@@ -886,6 +889,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         for acct in accts[1:]:
             tot_end = tot_end + acct.holdings.sum(axis=1)
         balance[:, m + 1] = tot_end
+
+    # A settlement in the final month can zero a path after its last
+    # depletion check ran.
+    final_dead = (depleted_month < 0) & (balance[:, -1] <= 1e-9)
+    depleted_month[final_dead] = n_months - 1
 
     return SimResult(
         config=cfg,
