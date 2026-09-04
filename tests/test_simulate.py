@@ -380,3 +380,13 @@ def test_fee_rejects_implausible_values():
     panel = make_panel()
     with pytest.raises(ValueError, match="fee_annual"):
         simulate(panel, cfg(fee_annual=0.5))
+
+
+def test_per_month_return_adjustment_path():
+    panel = make_panel(ret_a=0.0, inflation=0.0)
+    adj = np.concatenate([np.full(12, 0.12), np.zeros(108)])  # +1%/mo year 1
+    r = simulate(panel, cfg(return_adjustments={"a": adj}))
+    assert np.allclose(r.balance[:, 12], 1000.0 * 1.01**12)
+    assert np.allclose(r.balance[:, -1], 1000.0 * 1.01**12)
+    with pytest.raises(ValueError, match="length"):
+        simulate(panel, cfg(return_adjustments={"a": np.zeros(7)}))

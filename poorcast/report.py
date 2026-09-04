@@ -370,7 +370,10 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
     )
     if cfg.return_adjustments:
         adjs = ", ".join(
-            f"{k} {v * 100:+.2f}%/yr" for k, v in cfg.return_adjustments.items()
+            f"{k} {v * 100:+.2f}%/yr"
+            if np.ndim(v) == 0
+            else f"{k} path {np.min(v) * 100:+.2f}..{np.max(v) * 100:+.2f}%/yr"
+            for k, v in cfg.return_adjustments.items()
         )
         wd += f" · return adjustment: {adjs}"
     if cfg.fee_annual:

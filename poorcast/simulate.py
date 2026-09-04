@@ -128,8 +128,10 @@ class SimConfig:
     state_tax: float = 0.0
     # Additive annual return adjustment per asset (decimal, applied as /12 to
     # every sampled month) - e.g. removing the historical multiple-expansion
-    # tailwind from US equities. {'us_equities': -0.005} = -50bp/yr.
-    return_adjustments: dict[str, float] | None = None
+    # tailwind from US equities. {'us_equities': -0.005} = -50bp/yr. A value
+    # may also be a per-month sequence (length years*12) of annual rates, for
+    # time-varying paths like a P/E cycle.
+    return_adjustments: "dict[str, float] | None" = None
     # Annual management/expense fee (decimal, e.g. 0.001 = 10bp) applied to
     # every asset as a monthly return drag of fee/12 - fund expense ratios,
     # or an advisor fee. Historical returns are index returns, so 0 models
@@ -540,10 +542,22 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         raise ValueError(f"fee_annual must be in [0, 0.1), got {cfg.fee_annual}")
     path_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
     if cfg.return_adjustments or cfg.fee_annual:
-        adj = np.array(
-            [(cfg.return_adjustments or {}).get(a, 0.0) for a in assets]
-        )
-        path_returns = path_returns + (adj - cfg.fee_annual)[None, None, :] / 12.0
+        vals = [(cfg.return_adjustments or {}).get(a, 0.0) for a in assets]
+        if any(np.ndim(v) > 0 for v in vals):
+            # Per-month adjustment paths (each scalar or length-n_months).
+            adj = np.zeros((n_months, len(assets)))
+            for j, v in enumerate(vals):
+                v = np.asarray(v, dtype=float)
+                if v.ndim > 0 and len(v) != n_months:
+                    raise ValueError(
+                        f"per-month return adjustment for {assets[j]!r} has "
+                        f"length {len(v)}, expected {n_months}"
+                    )
+                adj[:, j] = v
+            path_returns = path_returns + (adj - cfg.fee_annual)[None, :, :] / 12.0
+        else:
+            adj = np.array(vals)
+            path_returns = path_returns + (adj - cfg.fee_annual)[None, None, :] / 12.0
     path_inflation = inflation_hist[months]  # (n_paths, n_months)
     e5 = min(60, n_months)
     early_real_market = (
