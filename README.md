@@ -327,9 +327,15 @@ How it behaves:
   traditional account, or from a Roth beyond its contribution basis (the
   account's `cost_basis` × balance), incur the 10% penalty, settled annually
   (on by default when `--age` is given; `--no-early-penalty` or
-  `early_penalty = false` under `[taxes]` disables it; 529s are assumed
-  qualified). Ordinary tax on early Roth earnings is not modeled — only the
-  penalty.
+  `early_penalty = false` under `[taxes]` disables it). Ordinary tax on
+  early Roth earnings is not modeled — only the penalty.
+- **529 draws in a household are non-qualified** — they fund living
+  expenses, not tuition — so each distribution splits pro-rata between
+  contributions (`cost_basis`) and earnings at the ratio on the draw date,
+  and the earnings are taxed as ordinary income plus the 10% penalty, at
+  any age. Model college itself as a standalone 529 run (tuition draws are
+  qualified and tax-free there). Not modeled: scholarship/death/disability
+  exceptions, state deduction recapture, the Roth-rollover escape hatch.
 - The report adds median terminal wealth per account; success still means
   the *household* never depleted (every account empty).
 

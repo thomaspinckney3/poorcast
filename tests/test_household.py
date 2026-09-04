@@ -241,3 +241,63 @@ def test_penalty_paid_from_taxable_when_present():
     # from the taxable account.
     assert np.allclose(r.account_terminal[:, 0], 500.0 - 12.0)
     assert np.allclose(r.account_terminal[:, 1], 1000.0 - 120.0 - 30.0)
+
+
+# --- non-qualified 529 draws -------------------------------------------------
+
+
+def test_household_529_draws_taxed_pro_rata_plus_penalty():
+    # 529 of 1000 with basis 500 drawn 20/mo (order override): each draw is
+    # 50% earnings pro-rata. Year total: 120 of earnings -> quarterly flat
+    # ordinary tax 0.25 * 120 = 30, annual penalty 0.10 * 120 = 12, both
+    # paid from the taxable account.
+    panel = make_panel()
+    c = cfg(
+        accounts=(Account("taxable", 1000.0), Account("529", 1000.0, cost_basis=0.5)),
+        withdraw_order=("529", "taxable"),
+        tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=240.0),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.account_terminal[:, 1], 1000.0 - 240.0)
+    assert np.allclose(r.account_terminal[:, 0], 1000.0 - 30.0 - 12.0)
+    assert np.allclose(r.total_tax_real, 42.0)
+
+
+def test_household_529_all_basis_is_penalty_free():
+    panel = make_panel()
+    c = cfg(
+        accounts=(Account("taxable", 1000.0), Account("529", 1000.0)),  # basis 1.0
+        withdraw_order=("529", "taxable"),
+        tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=240.0),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.account_terminal[:, 0], 1000.0)  # no tax, no penalty
+    assert np.allclose(r.total_tax_real, 0.0)
+
+
+def test_household_529_penalty_without_tax_regime():
+    # No taxable/traditional tax machinery: earnings go untaxed (documented)
+    # but the 10% penalty still applies, paid from the drawing account.
+    panel = make_panel()
+    c = cfg(
+        accounts=(Account("529", 1000.0, cost_basis=0.5),),
+        withdrawal=Withdrawal("fixed_real", amount=240.0),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.total_tax_real, 12.0)
+    assert np.allclose(r.balance[:, -1], 1000.0 - 240.0 - 12.0)
+
+
+def test_single_account_529_stays_qualified():
+    panel = make_panel()
+    c = cfg(
+        account="529",
+        initial=1000.0,
+        cost_basis_start=0.5,
+        withdrawal=Withdrawal("fixed_real", amount=240.0),
+    )
+    r = simulate(panel, c)
+    assert np.allclose(r.total_tax_real, 0.0)
+    assert np.allclose(r.balance[:, -1], 1000.0 - 240.0)

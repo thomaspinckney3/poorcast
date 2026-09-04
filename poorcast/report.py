@@ -346,6 +346,8 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         and kinds_present & {"traditional", "roth"}
     ):
         wd += " · 10% penalty on early retirement-account draws (pre-59½)"
+    if cfg.accounts and "529" in kinds_present:
+        wd += " · 529 draws non-qualified (earnings taxed + 10%)"
     mode = (
         f"{result.n_paths:,} bootstrap paths (block={cfg.block_months}mo)"
         if cfg.mode == "bootstrap"

@@ -79,6 +79,8 @@ class Account:
     # taxable: starting cost basis as a fraction of balance. roth: the
     # contribution basis - draws up to it are penalty-free before 59.5,
     # draws beyond it are earnings (default 1.0 = all contributions).
+    # 529 (multi-account mode): the contribution fraction for the pro-rata
+    # earnings/basis split on non-qualified draws.
     cost_basis: float = 1.0
 
 
@@ -512,6 +514,16 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     roth_basis = {
         i: np.full(n_paths, specs[i].balance * specs[i].cost_basis) for i in roth_idx
     }
+    # 529s in a household waterfall: any draw funds the household's spending,
+    # not education, so it is NON-QUALIFIED - each distribution splits
+    # pro-rata between contributions (cost_basis) and earnings at the ratio
+    # on the draw date; the earnings are ordinary income (taxed wherever a
+    # tax regime exists) plus the 10% penalty, at any age. Standalone 529
+    # runs model tuition draws and stay qualified (tax-free).
+    q529_idx = [i for i, k in enumerate(kinds) if k == "529"] if multi else []
+    q529_basis = {
+        i: np.full(n_paths, specs[i].balance * specs[i].cost_basis) for i in q529_idx
+    }
     if taxed:
         from .data import INCOME_CLASS
 
@@ -638,6 +650,19 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 from_basis = np.minimum(draws[ri], roth_basis[ri])
                 roth_basis[ri] = roth_basis[ri] - from_basis
                 penalty_acc += 0.10 * (draws[ri] - from_basis)
+        for qi in q529_idx:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                basis_frac = np.where(
+                    totals[qi] > 0,
+                    np.minimum(q529_basis[qi] / np.where(totals[qi] > 0, totals[qi], 1.0), 1.0),
+                    1.0,
+                )
+            from_basis = draws[qi] * basis_frac
+            q529_basis[qi] = np.maximum(q529_basis[qi] - from_basis, 0.0)
+            earnings = draws[qi] - from_basis
+            penalty_acc += 0.10 * earnings
+            if taxed or trad:
+                other_ord_acc += earnings
 
         wd_to_sell = draws
         if taxed:
@@ -837,9 +862,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             acct.holdings *= scale_t[:, None]
             dist_acc = tax.copy()  # paying the tax is itself a distribution
 
-        # Early-withdrawal penalties settle annually, paid from the taxable
-        # account first, then the others; the payment is not a distribution.
-        if pen_active and annual and penalty_acc.any():
+        # Penalties (early withdrawals, non-qualified 529 earnings) settle
+        # annually, paid from the taxable account first, then the others;
+        # the payment is not a distribution.
+        if annual and penalty_acc.any():
             due = penalty_acc
             penalty_acc = np.zeros(n_paths)
             pay_order = ([tax_i] if tax_i is not None else []) + [
