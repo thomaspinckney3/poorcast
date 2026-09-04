@@ -291,10 +291,15 @@ def load_config(path: str) -> dict:
 
     if "tips_ladder" in raw:
         lad = raw["tips_ladder"]
-        _reject_unknown(lad, {"annual", "yield", "curve", "deferred"}, "[tips_ladder]")
-        if "annual" not in lad:
-            raise ConfigError("[tips_ladder] needs `annual` (real dollars per year)")
-        out["tips_ladder"] = _num(lad["annual"], "tips_ladder.annual")
+        _reject_unknown(
+            lad, {"annual", "yield", "curve", "deferred", "years"}, "[tips_ladder]"
+        )
+        # `annual` sizes the external (income-targeted) ladder; without it the
+        # section just prices tips_ladder allocation entries.
+        if "annual" in lad:
+            out["tips_ladder"] = _num(lad["annual"], "tips_ladder.annual")
+        if "years" in lad:
+            out["ladder_years"] = _int(lad["years"], "tips_ladder.years")
         if "yield" in lad:
             out["tips_ladder_yield"] = _num(lad["yield"], "tips_ladder.yield")
         if "curve" in lad:

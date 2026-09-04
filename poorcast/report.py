@@ -345,6 +345,12 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             f" · TIPS ladder floor ${lad.annual:,.0f}/yr "
             f"({lad.years}y at {lad.real_yield:.2%} real, cost ${lad.cost:,.0f}, {acct})"
         )
+    elif result.ladder_annual:
+        pricing = "today's curve" if cfg.ladder_curve else f"{cfg.ladder_yield:.2%} real"
+        wd += (
+            f" · TIPS rungs paying ${result.ladder_annual:,.0f}/yr "
+            f"({min(cfg.ladder_years or cfg.years, cfg.years)}y at {pricing})"
+        )
     kinds_present = (
         {a.kind for a in cfg.accounts} if cfg.accounts else {cfg.account}
     )
@@ -386,11 +392,14 @@ def print_summary(result: SimResult, real: bool = True) -> None:
     unit = "real" if real else "nominal"
     print(f"\n=== {cfg.years}-year horizon ===")
     print(f"  {_describe(result)}")
+    lad_annual = (
+        cfg.ladder.annual if cfg.ladder is not None else (result.ladder_annual or 0.0)
+    )
     if cfg.withdrawal.kind != "none":
-        if cfg.ladder is not None:
+        if lad_annual:
             print(
                 f"  Success rate (full income maintained): {s['success_rate']:.1%}"
-                f"  — worst case falls back to the ${cfg.ladder.annual:,.0f}/yr "
+                f"  — worst case falls back to the ${lad_annual:,.0f}/yr "
                 "ladder floor, not $0"
             )
         else:
@@ -402,9 +411,11 @@ def print_summary(result: SimResult, real: bool = True) -> None:
                 f"{f['earliest']}, median year {f['median']}, "
                 f"90% fail after year {f['p10']}"
             )
-        ladder_income = (
-            cfg.ladder.annual * cfg.ladder.years if cfg.ladder is not None else 0.0
+        lad_years = (
+            cfg.ladder.years if cfg.ladder is not None
+            else min(cfg.ladder_years or cfg.years, cfg.years)
         )
+        ladder_income = lad_annual * lad_years
         med_wd = float(np.median(result.total_withdrawn_real)) + ladder_income
         label = "incl. ladder" if ladder_income else "real"
         print(f"  Median total income withdrawn ({label}): {_dollars(med_wd)}")

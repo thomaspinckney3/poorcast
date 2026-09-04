@@ -181,6 +181,29 @@ Bracket `--tips-ladder-yield` with 0–2 (%) to see regime sensitivity, or use
 By default the ladder is taxable (coupons + inflation accrual taxed as
 ordinary income); `--tips-ladder-deferred` holds it in an IRA.
 
+**Or hold the ladder as an allocation**: the reserved asset name
+`tips_ladder` in any allocation buys rungs with that share of the balance at
+t=0 — a purchase-time cost share, not a maintained weight (rungs amortize
+and never rebalance; the other assets renormalize around them). Rung income
+offsets withdrawals; remaining principal is carried in reported balances at
+par but can't be drawn early. In a household this makes **ladder asset
+location** first-class:
+
+```toml
+[[account]]
+type = "roth"
+balance = 500_000
+allocation = { tips_ladder = 100 }   # rung payouts tax-free
+
+[tips_ladder]
+curve = true      # or yield = 2.0; years = N (default: the horizon)
+```
+
+Taxation follows the holding account: taxable = phantom income; traditional
+= payouts are RMD-countable ordinary-income distributions (RMDs are owed on
+the rungs' value too); Roth = free. Not combinable with `--tips-ladder`,
+glidepaths, or 529 accounts.
+
 **"What if I had retired in 1968?"** — instead of resampling, run every actual
 historical start month as one path:
 

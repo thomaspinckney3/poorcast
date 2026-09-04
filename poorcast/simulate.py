@@ -158,6 +158,19 @@ class SimConfig:
     # cfg-level ladder are single-account features.
     accounts: tuple[Account, ...] | None = None
     withdraw_order: tuple[str, ...] | None = None  # default taxable->traditional->roth->529
+    # TIPS-ladder-as-allocation: the reserved asset name 'tips_ladder' in any
+    # allocation buys rungs with that share of the account's balance at t=0
+    # (a purchase-time cost share, NOT a maintained weight - rungs amortize
+    # and are never rebalanced). Rung income offsets household withdrawals;
+    # the remaining principal is carried in reported balances at amortized
+    # (par) value but is not drawable by the waterfall. Taxation follows the
+    # holding account: taxable = phantom income; traditional = payouts are
+    # distributions (RMD-countable, early-penalty applies); roth = tax-free.
+    # Priced at ladder_yield (flat, decimal) or ladder_curve ({maturity_years:
+    # yield} points, interpolated); term ladder_years (default: the horizon).
+    ladder_yield: float = 0.02
+    ladder_curve: dict[int, float] | None = None
+    ladder_years: int | None = None
     age: int | None = None  # age at t=0; enables age-based features (RMDs)
     # 10% early-withdrawal penalty before age 59.5 (needs `age`): applies to
     # traditional draws and to the earnings portion of roth draws (beyond the
@@ -218,6 +231,8 @@ class SimResult:
     # per account (n_paths, n_accounts). None for single-account runs.
     account_kinds: tuple[str, ...] | None = None
     account_terminal: np.ndarray | None = None
+    # Total real income/yr of allocation-based TIPS ladders, None if none.
+    ladder_annual: float | None = None
 
     @property
     def real_balance(self) -> np.ndarray:
@@ -280,6 +295,7 @@ def _sample_months(cfg: SimConfig, t_hist: int, rng: np.random.Generator) -> np.
 
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 DEFAULT_WITHDRAW_ORDER = ("taxable", "traditional", "roth", "529")
+LADDER_ASSET = "tips_ladder"  # reserved allocation name: buys held-to-maturity rungs
 
 
 def total_initial(cfg: SimConfig) -> float:
@@ -352,7 +368,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         assets: list[str] = []
         for src in [cfg.allocation or {}] + [a.allocation or {} for a in specs]:
             for k in src:
-                if k not in assets:
+                if k not in assets and k != LADDER_ASSET:
                     assets.append(k)
         for a in specs:
             if a.allocation is None and not cfg.allocation:
@@ -373,17 +389,83 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         )
         kinds = [cfg.account]
         draw_order = [0]
-        assets = list(cfg.allocation)
+        assets = [a for a in cfg.allocation if a != LADDER_ASSET]
     missing = [a for a in assets if a not in panel.columns]
     if missing:
         raise ValueError(f"unknown asset(s): {missing}; available: {list(panel.columns)}")
-    acct_w = [_weight_vec(s.allocation or cfg.allocation, assets, "allocation")
-              for s in specs]
+    # Per-account weights: raw asset weights (used at purchase - the ladder
+    # share buys rungs) and liquid-renormalized weights (rebalance targets;
+    # rungs are never rebalanced).
+    lad_w: list[float] = []
+    acct_w_raw: list[np.ndarray] = []
+    for s in specs:
+        alloc = s.allocation or cfg.allocation
+        wl = float(alloc.get(LADDER_ASSET, 0.0))
+        if not 0 <= wl <= 1:
+            raise ValueError(f"tips_ladder weight must be in [0, 1], got {wl}")
+        rest = {k: v for k, v in alloc.items() if k != LADDER_ASSET}
+        wv = np.array([rest.get(a, 0.0) for a in assets], dtype=float)
+        if abs(wv.sum() + wl - 1.0) > 1e-6:
+            raise ValueError(
+                f"allocation weights sum to {wv.sum() + wl:.4f}, expected 1"
+            )
+        lad_w.append(wl)
+        acct_w_raw.append(wv)
+    has_ladder_alloc = any(wl > 0 for wl in lad_w)
+    acct_w = [
+        w / (1.0 - wl) if wl < 1 else w for w, wl in zip(acct_w_raw, lad_w)
+    ]
+    if has_ladder_alloc:
+        if not assets:
+            raise ValueError("at least one non-ladder asset is required")
+        if cfg.ladder is not None:
+            raise ValueError(
+                "use either the external ladder (--tips-ladder) or a "
+                "tips_ladder allocation, not both"
+            )
+        if cfg.allocation_end is not None or cfg.allocation_rule is not None:
+            raise ValueError(
+                "glidepaths/allocation rules don't support tips_ladder allocations"
+            )
+        for wl, k in zip(lad_w, kinds):
+            if wl > 0 and k == "529":
+                raise ValueError("tips_ladder is not supported in 529 accounts")
     initial_total = total_initial(cfg)
     if multi:
-        weights = sum(s.balance * w for s, w in zip(specs, acct_w)) / initial_total
+        if has_ladder_alloc:
+            w_house = sum(s.balance * w for s, w in zip(specs, acct_w_raw))
+            hs = w_house.sum()
+            weights = w_house / hs if hs > 0 else w_house
+        else:
+            weights = sum(s.balance * w for s, w in zip(specs, acct_w)) / initial_total
     else:
         weights = acct_w[0]
+
+    # Build the per-account rung ladders bought at t=0.
+    acct_ladders: dict[int, object] = {}
+    lyears = 0
+    ladder_annual_total = 0.0
+    if has_ladder_alloc:
+        from .ladder import build_ladder, build_ladder_curve
+
+        lyears = cfg.ladder_years or cfg.years
+        for i, (s, wl) in enumerate(zip(specs, lad_w)):
+            if wl <= 0:
+                continue
+            cost = wl * s.balance
+            tax_flag = kinds[i] == "taxable"
+            if cfg.ladder_curve:
+                unit = build_ladder_curve(1.0, lyears, cfg.ladder_curve, taxable=tax_flag)
+                spec = build_ladder_curve(
+                    cost / unit.cost, lyears, cfg.ladder_curve, taxable=tax_flag
+                )
+            else:
+                unit = build_ladder(1.0, lyears, cfg.ladder_yield, taxable=tax_flag)
+                spec = build_ladder(
+                    cost / unit.cost, lyears, cfg.ladder_yield, taxable=tax_flag
+                )
+            acct_ladders[i] = spec
+            ladder_annual_total += spec.annual
 
     # Per-month target weights: static, or a linear glide over glide_years
     # (single-account mode; each account in accounts mode holds its own
@@ -491,6 +573,23 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     for em, amt in cfg.expenses or ():
         if 0 <= em < n_months:
             expense_real_m[em] += amt
+    # Rung income offsets household withdrawals like any income stream
+    # (smoothed monthly); the remaining principal is carried in reported
+    # balances at par (held to maturity) but is not drawable.
+    if acct_ladders:
+        lm = min(lyears * 12, n_months)
+        for lad in acct_ladders.values():
+            income_real_m[:lm] += lad.annual / 12.0
+        acct_lad_val = {}
+        lad_val_real = np.zeros(n_months + 1)
+        for i, lad in acct_ladders.items():
+            prin = np.asarray(lad.remaining_principal_real(), dtype=float)
+            v = np.zeros(n_months + 1)
+            for k in range(n_months + 1):
+                if k // 12 < lyears:
+                    v[k] = prin[k // 12]
+            acct_lad_val[i] = v
+            lad_val_real += v
     has_flows = bool(income_real_m.any() or expense_real_m.any())
     if w.flex_floor is not None:
         if w.kind != "fixed_real":
@@ -502,7 +601,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         raise ValueError(f"tax rates must be in [0, 1), got {cfg.tax_rate}/{ord_rate}")
     accts: list[_Acct] = []
     for i, s in enumerate(specs):
-        h = np.tile(acct_w[i] * s.balance, (n_paths, 1))  # (n_paths, n_assets)
+        # Raw weights: the ladder share of the balance bought rungs at t=0,
+        # leaving balance x asset-weight dollars in each liquid asset.
+        h = np.tile(acct_w_raw[i] * s.balance, (n_paths, 1))  # (n_paths, n_assets)
         b = h * s.cost_basis  # average-cost basis per asset (taxable only)
         accts.append(_Acct(kinds[i], acct_w[i], h, b,
                            taxed and kinds[i] == "taxable"))
@@ -571,7 +672,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         # ("phantom income"), both state-exempt Treasury interest. The tax is
         # paid from the portfolio.
         ladder_coupons = ladder_principal = None
-        lad = cfg.ladder
+        # Phantom income applies to the external ladder or an allocation-based
+        # ladder held in the taxable account.
+        lad = cfg.ladder if cfg.ladder is not None else acct_ladders.get(tax_i)
         if lad is not None and getattr(lad, "taxable", False) and getattr(lad, "faces", ()):
             ladder_coupons = lad.coupon_income_real()
             ladder_principal = lad.remaining_principal_real()
@@ -649,17 +752,29 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         for t in totals[1:]:
             total = total + t
         alive = total > 0
+        # Wealth for policy purposes (flex, percent-of-balance) includes the
+        # ladder's remaining principal; draw capacity does not (rungs are
+        # held to maturity, not sellable).
+        total_rep = (
+            total + lad_val_real[m] * cum_inflation[:, m] if acct_ladders else total
+        )
         if trad and m % 12 == 0:
             year_start_bal = totals[trad_i].copy()
+            if trad_i in acct_ladders:
+                # RMDs are owed on the IRA's full value, rungs included
+                # (their payouts count toward satisfying it via dist_acc).
+                year_start_bal = (
+                    year_start_bal + acct_lad_val[trad_i][m] * cum_inflation[:, m]
+                )
 
         # Withdrawal / contribution at the start of the month, pro-rata across
         # holdings so the flow itself doesn't rebalance the portfolio.
         if w.kind == "percent_of_balance" and m > 0 and m % 12 == 0:
-            monthly_withdrawal = total * w.rate / 12.0
+            monthly_withdrawal = total_rep * w.rate / 12.0
         if w.kind == "fixed_real":
             spend = spend_real_m[m] * cum_inflation[:, m]
             if w.flex_floor is not None:
-                real_balance = total / cum_inflation[:, m]
+                real_balance = total_rep / cum_inflation[:, m]
                 spend *= np.clip(real_balance / initial_total, w.flex_floor, 1.0)
         elif w.kind == "percent_of_balance":
             spend = monthly_withdrawal.copy()
@@ -736,6 +851,22 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             penalty_acc += 0.10 * earnings
             if taxed or trad:
                 other_ord_acc += earnings
+        # Rung payouts from retirement-held ladders: an IRA's payouts are
+        # distributions (ordinary income, RMD-countable, early-penalized);
+        # a roth's consume contribution basis first for the early penalty.
+        if acct_ladders and m < lyears * 12:
+            if trad and trad_i in acct_ladders:
+                pay_t = acct_ladders[trad_i].annual / 12.0 * cum_inflation[:, m]
+                dist_acc += pay_t
+                if pen_active and m < pen_cut:
+                    penalty_acc += 0.10 * pay_t
+            if pen_active and m < pen_cut:
+                for ri in roth_idx:
+                    if ri in acct_ladders:
+                        pay_r = acct_ladders[ri].annual / 12.0 * cum_inflation[:, m]
+                        from_basis = np.minimum(pay_r, roth_basis[ri])
+                        roth_basis[ri] = roth_basis[ri] - from_basis
+                        penalty_acc += 0.10 * (pay_r - from_basis)
 
         wd_to_sell = draws
         if taxed:
@@ -770,7 +901,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             if i == inflow_i and (cfg.contribution_monthly > 0 or has_flows):
                 empty_in = (totals[i] <= 0) & (np.asarray(flow) > 0)
                 if empty_in.any():
-                    add = np.where(empty_in, flow, 0.0)[:, None] * acct.weights[None, :]
+                    # An all-ladder account has no liquid weights; fall back
+                    # to household weights, then equal weights.
+                    wvec = acct.weights
+                    if wvec.sum() <= 0:
+                        wvec = weights if weights.sum() > 0 else np.full(
+                            len(assets), 1.0 / len(assets)
+                        )
+                    add = np.where(empty_in, flow, 0.0)[:, None] * wvec[None, :]
                     acct.holdings += add
                     if acct.taxed:
                         acct.basis += add
@@ -821,6 +959,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         # rule-driven in single-account mode; static per account otherwise).
         if (m + 1) % cfg.rebalance_months == 0:
             for i, acct in enumerate(accts):
+                if multi and acct.weights.sum() <= 0:
+                    continue  # all-ladder account: no liquid targets
                 tot = acct.holdings.sum(axis=1)
                 if not multi and cfg.allocation_rule is not None:
                     state = RuleState(
@@ -973,6 +1113,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         tot_end = accts[0].holdings.sum(axis=1)
         for acct in accts[1:]:
             tot_end = tot_end + acct.holdings.sum(axis=1)
+        if acct_ladders:
+            tot_end = tot_end + lad_val_real[m + 1] * cum_inflation[:, m + 1]
         balance[:, m + 1] = tot_end
 
     # A settlement in the final month can zero a path after its last
@@ -993,8 +1135,22 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         early_real_market=early_real_market,
         account_kinds=tuple(kinds) if multi else None,
         account_terminal=(
-            np.stack([a.holdings.sum(axis=1) for a in accts], axis=1) if multi else None
+            np.stack(
+                [
+                    a.holdings.sum(axis=1)
+                    + (
+                        acct_lad_val[i][n_months] * cum_inflation[:, -1]
+                        if i in acct_ladders
+                        else 0.0
+                    )
+                    for i, a in enumerate(accts)
+                ],
+                axis=1,
+            )
+            if multi
+            else None
         ),
+        ladder_annual=ladder_annual_total or None,
     )
 
 

@@ -608,6 +608,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # Allocation-based TIPS ladders (the 'tips_ladder' asset name).
+    all_allocs = [args.allocation or {}] + (
+        [a.allocation or {} for a in accounts] if accounts else []
+    )
+    has_lad_alloc = any(a and "tips_ladder" in a for a in all_allocs)
+    ladder_curve = None
+    if has_lad_alloc:
+        if args.tips_ladder is not None:
+            print("error: use either --tips-ladder or a tips_ladder allocation, not both")
+            return 2
+        if args.tips_ladder_curve:
+            from .ladder import current_real_curve
+
+            ladder_curve = current_real_curve()
+
     for years in horizons:
         run_withdrawal = withdrawal
         run_initial = args.initial
@@ -657,6 +672,9 @@ def main(argv: list[str] | None = None) -> int:
             account=args.account,
             age=args.age,
             early_penalty=not args.no_early_penalty,
+            ladder_yield=args.tips_ladder_yield / 100.0,
+            ladder_curve=ladder_curve,
+            ladder_years=getattr(args, "ladder_years", None),
             income=tuple(streams) or None,
             expenses=tuple(expenses) or None,
             tax_rate=0.0 if strip_tax else args.tax_rate / 100.0,
