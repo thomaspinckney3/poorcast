@@ -70,9 +70,17 @@ inflation-adjusted 4% a year — does the money last 30 years?
 Each run also writes a chart (percentile fan, solvency curve, terminal-wealth
 distribution) to `out/forecast_<N>y.png` unless you pass `--no-charts`.
 
-**Reading the output.** *Success rate* is the fraction of simulated paths that
-never depleted. *Terminal wealth* percentiles are in today's dollars (real);
-`$0` at the 5th percentile means at least 5% of paths ran out. The
+**Reading the output.** *Success rate* is the fraction of simulated paths on
+which the spending rule was never short of money. Without `--flex` that is the
+same as never depleting. With `--flex` the rule itself cuts spending whenever
+real wealth is below the starting balance, so a "successful" path may have
+spent years at the reduced budget: the report's *Flex* line says how much of
+the time the cut was in force and what share of the unflexed lifetime budget
+the median path actually received. With a TIPS ladder the label reads
+*spending rule never short*, because a failing path falls to the ladder's
+income floor rather than to $0. *Terminal wealth* percentiles are in today's
+dollars (real); `$0` at the 5th percentile means at least 5% of paths ran
+out of liquid assets. The
 *first-5-years* line quantifies **sequence-of-returns risk**: bad markets
 early in retirement matter far more than bad markets late. Taxes default to
 realistic federal brackets plus 5% state tax on a fully taxable account — pass
@@ -157,6 +165,14 @@ little in the median case, sharply cuts the risk of ruin:
 poorcast run --allocation us_equities=60,us_bonds_10yr=40 \
     --withdraw 4% --flex --horizons 30
 ```
+
+Read the success rate with care afterwards: it now measures whether the
+*flexed* rule was ever short, and under a 4% draw real wealth hovers near its
+starting level, so the cut is in force a large share of the time (roughly
+half of all plan-years in a typical 40-year run, at the full 25% cut for
+about a quarter of them). The reported rate is the survival rate of a
+household willing to spend less, not of a fixed lifestyle; the *Flex* line in
+the output quantifies the difference.
 
 **Spend a percent of the current balance** — spending floats with the market
 and can shrink, but the portfolio never fully depletes:
@@ -400,7 +416,8 @@ How it behaves:
   10% penalty, at any age. Not modeled: scholarship/death/disability
   exceptions, state deduction recapture, the Roth-rollover escape hatch.
 - The report adds median terminal wealth per account; success still means
-  the *household* never depleted (every account empty).
+  the *household*'s spending rule was never short (without a ladder: every
+  account empty).
 
 - **Glidepaths are per account.** `glide_to = { ... }` on an `[[account]]`
   drifts that account's liquid mix linearly to the target over `[glide]

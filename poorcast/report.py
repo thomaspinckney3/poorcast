@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
-from .simulate import DEFAULT_WITHDRAW_ORDER, SimResult, starting_wealth, summarize
+from .simulate import (DEFAULT_WITHDRAW_ORDER, SimResult, _schedule_array,
+                       starting_wealth, summarize, total_initial)
 
 # Reference dataviz palette (light mode): sequential blue ramp + ink tokens.
 SURFACE = "#fcfcfb"
@@ -154,6 +155,42 @@ def sequence_risk_stats(result: SimResult) -> dict | None:
         out["fail_rate_base"] = float(fail.mean())
         out["failures_with_bad_start"] = float((x[fail] <= q20).mean())
     return out if len(out) > 1 else None
+
+
+def flex_stats(result: SimResult) -> dict | None:
+    """How much the flex rule actually took away: share of all plan-months
+    spent below the full target and at the floor, and the share of the
+    unflexed lifetime budget the rule allowed (median path, mean). None
+    when the run had no flex."""
+    cfg = result.config
+    w = cfg.withdrawal
+    if w.kind != "fixed_real" or w.flex_floor is None:
+        return None
+    n = result.balance.shape[1] - 1
+    # The engine's own multiplier: real wealth at the start of each month
+    # (ladder principal included, as the engine counts it) over the initial
+    # balance the rule was anchored to.
+    factor = np.clip(result.real_balance[:, :-1] / total_initial(cfg), w.flex_floor, 1.0)
+    if w.schedule:
+        target = _schedule_array(w.schedule, n)
+    else:
+        target = np.full(n, (w.amount or w.rate * total_initial(cfg)) / 12.0)
+    if w.decline:
+        past = np.maximum(np.arange(n) - w.decline_start_month, 0) / 12.0
+        target = target * (1.0 - w.decline) ** past
+    budget = target.sum()
+    if budget <= 0:
+        return None
+    allowed = (factor * target[None, :]).sum(axis=1) / budget
+    below = factor < 1 - 1e-9
+    return {
+        "months_below": float(below.mean()),
+        "months_at_floor": float((factor <= w.flex_floor + 1e-9).mean()),
+        "budget_median": float(np.median(allowed)),
+        "budget_mean": float(allowed.mean()),
+        "budget_p5": float(np.percentile(allowed, 5)),
+        "never_cut": float((~below.any(axis=1)).mean()),
+    }
 
 
 def failure_hist(result: SimResult, ax=None):
@@ -429,12 +466,22 @@ def print_summary(result: SimResult, real: bool = True) -> None:
             )
             floor_span = f" through year {lad_yrs}" if lad_yrs < cfg.years else ""
             print(
-                f"  Success rate (full income maintained): {s['success_rate']:.1%}"
+                f"  Success rate (spending rule never short): {s['success_rate']:.1%}"
                 f"  — worst case falls back to the ${lad_annual:,.0f}/yr "
                 f"ladder floor{floor_span}, not $0"
             )
         else:
             print(f"  Success rate (never depleted): {s['success_rate']:.1%}")
+        fx = flex_stats(result)
+        if fx is not None:
+            print(
+                f"  Flex: spending below target in {fx['months_below']:.0%} of "
+                f"plan-months ({fx['months_at_floor']:.0%} at the "
+                f"{cfg.withdrawal.flex_floor:.0%} floor); the rule allowed "
+                f"{fx['budget_median']:.0%} of the unflexed lifetime budget on "
+                f"the median path ({fx['budget_p5']:.0%} at the 5th pct); "
+                f"{fx['never_cut']:.1%} of paths never cut"
+            )
         f = failure_year_stats(result)
         if f is not None:
             print(

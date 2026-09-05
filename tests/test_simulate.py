@@ -390,3 +390,22 @@ def test_per_month_return_adjustment_path():
     assert np.allclose(r.balance[:, -1], 1000.0 * 1.01**12)
     with pytest.raises(ValueError, match="length"):
         simulate(panel, cfg(return_adjustments={"a": np.zeros(7)}))
+
+
+def test_flex_stats_measure_time_below_target_and_budget_delivered():
+    from poorcast.report import flex_stats
+
+    # zero returns: withdrawing 5%/yr drags the real balance below the
+    # initial balance from month 1 on, so the rule is below target in every
+    # month after the first and reaches the 75% floor once 25% is gone.
+    panel = make_panel(ret_a=0.0, inflation=0.0)
+    r = simulate(panel, cfg(withdrawal=Withdrawal("fixed_real", rate=0.05, flex_floor=0.75)))
+    fx = flex_stats(r)
+    n = r.balance.shape[1] - 1
+    assert fx["months_below"] == pytest.approx((n - 1) / n)
+    assert 0 < fx["months_at_floor"] < 1
+    assert 0.75 < fx["budget_median"] < 1.0
+    assert fx["budget_mean"] == pytest.approx(fx["budget_median"])  # all paths identical
+    assert fx["never_cut"] == 0.0
+    # no flex -> no stats
+    assert flex_stats(simulate(panel, cfg(withdrawal=Withdrawal("fixed_real", rate=0.05)))) is None
