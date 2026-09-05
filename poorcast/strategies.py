@@ -60,11 +60,16 @@ def ratchet_rule(
     """Bernstein's 'stop playing when you've won': permanently de-risk once the
     real balance reaches `threshold` x initial. One-way."""
     won = None
+    last_month = -1
 
     def rule(state: RuleState) -> np.ndarray:
-        nonlocal won
-        if won is None or len(won) != len(state.balance):
+        nonlocal won, last_month
+        # A run calls the rule at increasing months; a month that does not
+        # advance means a new simulation started with the same rule object,
+        # so forget the previous run's ratchet flags.
+        if won is None or len(won) != len(state.balance) or state.month <= last_month:
             won = np.zeros(len(state.balance), dtype=bool)
+        last_month = state.month
         won |= state.real_balance >= threshold * state.initial
         return mix_weights(np.where(won, equity_after, equity_before))
 
