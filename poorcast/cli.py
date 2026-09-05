@@ -516,7 +516,7 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         help="months between rebalances (default 3 = quarterly; 12 = annual, "
         "a large value = never)",
     )
-    r.add_argument("--start", default="1960-01", help="earliest history to sample (default 1960-01)")
+    r.add_argument("--start", default="1955-01", help="earliest history to sample (default 1955-01, when every asset has data)")
     r.add_argument("--end", default=None, help="latest history to sample (default: all)")
     r.add_argument("--seed", type=int, default=None, help="random seed for reproducibility")
     r.add_argument("--nominal", action="store_true", help="report nominal dollars instead of real")

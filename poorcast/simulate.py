@@ -221,7 +221,7 @@ class SimConfig:
     contribution_monthly: float = 0.0  # real (inflation-adjusted) monthly contribution
     block_months: int = 24  # bootstrap block length
     mode: str = "bootstrap"  # or 'historical': every actual overlapping window
-    sample_start: str = "1960-01"  # earliest historical month to sample from
+    sample_start: str = "1955-01"  # earliest historical month to sample from
     sample_end: str | None = None
     rebalance_months: int = 3  # quarterly
     seed: int | None = None

@@ -49,22 +49,22 @@ inflation-adjusted 4% a year — does the money last 30 years?
   60% us_equities, 35% us_bonds_10yr, 5% cash · start $1,000,000 · withdrawing 4.0%/yr
   of initial (inflation-adjusted) · taxable, federal brackets (single filer, 2026 law,
   indexed) + 5% state · quarterly rebalancing · 10,000 bootstrap paths (block=24mo) ·
-  history 1960-01–2026-06
-  Success rate (never depleted): 91.7%
-  Failed paths (8.3%): earliest failure year 13, median year 25, 90% fail after year 19
+  history 1955-01–2026-06
+  Success rate (never depleted): 92.8%
+  Failed paths (7.2%): earliest failure year 14, median year 26, 90% fail after year 20
   Median total income withdrawn (real): $1.2M
-  Median total taxes paid (real): $169k
-  First-5-years market: explains 22% of terminal-wealth variance among surviving
-  paths; failure rate 29.6% after a worst-quintile start vs 8.3% overall; 71%
+  Median total taxes paid (real): $181k
+  First-5-years market: explains 21% of terminal-wealth variance among surviving
+  paths; failure rate 27.0% after a worst-quintile start vs 7.2% overall; 75%
   of failures began with one
   Terminal wealth (real):
     5th pct           $0
-    25th pct       $565k
-    median         $1.3M
-    75th pct      $2.25M
-    95th pct      $4.33M
-  Median real growth rate: 0.89%/yr
-  Chance of ending below start (real): 39.8%
+    25th pct       $643k
+    median        $1.38M
+    75th pct       $2.4M
+    95th pct      $4.42M
+  Median real growth rate: 1.09%/yr
+  Chance of ending below start (real): 37.5%
 ```
 
 Each run also writes a chart (percentile fan, solvency curve, terminal-wealth
@@ -280,7 +280,7 @@ resembles the assumed level at that point of the path (Gaussian kernel,
 re-centered so the path's multiple change replaces the sampled regimes'
 own. Conditioned runs inherit the *dynamics* (volatility, correlations,
 inflation regime) of comparable valuation eras — which also means they
-inherit those eras' company: since 1960, high-CAPE months are almost
+inherit those eras' company: since 1955, high-CAPE months are almost
 entirely 1995–2021, so a conditioned high-valuation scenario largely
 excludes 1970s-style stagflation. That is history's honest answer, not a
 neutral one. `--adjust asset=-1.1,...` (or `[adjustments]`) shifts any
@@ -290,7 +290,7 @@ Other useful knobs: `--fees 1` (annual management/expense drag in %; historical
 returns are index returns, so the default is free investing — a 1% advisor fee
 visibly moves 30-year success rates), `--filing married`, `--state-tax 0`,
 `--cost-basis 0.5` (embedded gains), `--rebalance 12` (annual),
-`--start 1926-01` (sample deeper history, US-only assets), `--sims 50000`,
+`--start 1926-01` (sample deeper history, US-only assets; default 1955-01), `--sims 50000`,
 `--seed 1` (reproducible), `--nominal` (report nominal dollars). Most age-based flags combine freely —
 Social Security plus a spending schedule plus a traditional IRA is a normal
 run. `poorcast run --help` lists everything.
@@ -462,10 +462,10 @@ scenario assumptions: `poorcast run --config plan.toml --optimize
 
 US CPI (FRED `CPIAUCSL`) is carried alongside and sampled jointly, driving
 inflation-adjusted withdrawals and real-dollar reporting. All returns are
-monthly, USD, total return. Default sampling starts in 1960; every asset now
-has data from 1955, so `--start 1955-01` (or `start = "1955-01"` under
-`[simulation]`) adds the late 1950s. The sampler automatically narrows the
-window to the months where every asset in *your* allocation has data.
+monthly, USD, total return. Default sampling starts in 1955, the first year
+every asset has data (`--start` moves it; `--start 1926-01` reaches deeper
+history for US-only mixes). The sampler automatically narrows the window to
+the months where every asset in *your* allocation has data.
 
 **Custom data:** drop `data/custom/<asset>.csv` (`month,return` rows like
 `1970-01,0.023`) and rerun `poorcast fetch` — it overrides the built-in series
@@ -603,7 +603,7 @@ print(f"success: {result.success_rate:.1%}")
 ## Caveats
 
 This is a research toy, not financial advice. Bootstrapping assumes the future
-is drawn from the same distribution as 1960–present; it ignores mean reversion
+is drawn from the same distribution as 1955–present; it ignores mean reversion
 beyond the block length, and fees default to zero (set `--fees` to yours).
 Yield-derived bond returns use exact repricing of an aged annual-coupon par
 bond. The muni series is self-consistent (GO-20 yields priced at their
