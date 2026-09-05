@@ -188,3 +188,39 @@ def test_model_clean_price_premium_par_discount():
     assert model_clean_price(0.04, 0.02, 10) > 100.0                     # premium
     assert model_clean_price(0.001, 0.03, 10) < 100.0                    # discount
     assert model_clean_price(0.02, 0.0, 5) == pytest.approx(110.0)       # zero yield
+
+
+def test_external_ladder_in_traditional_account_payouts_are_distributions():
+    import pandas as pd
+    from poorcast.simulate import SimConfig, Withdrawal, simulate
+
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    panel = pd.DataFrame({"a": np.zeros(480), "inflation": np.zeros(480)}, index=idx)
+    lad = build_ladder(60.0, 2, 0.0, taxable=False)  # 60/yr for 2 years
+    base = dict(allocation={"a": 1.0}, initial=1000.0, years=2, n_sims=2, seed=0,
+                age=60, account="traditional", tax_ordinary=0.25,
+                withdrawal=Withdrawal("fixed_real", amount=120.0))
+    r = simulate(panel, SimConfig(**base, ladder=lad))
+    # Year 1: 120 withdrawn + 60 rung payout = 180 distributed -> tax 45.
+    # Year 2: 120 + 60 + last year's 45 tax (itself a distribution) -> 56.25.
+    assert np.allclose(r.total_tax_real, 45.0 + 56.25)
+    assert np.allclose(r.balance[:, -1], 1000.0 - 240.0 - 45.0 - 56.25)
+
+
+def test_external_ladder_in_traditional_account_counts_toward_rmd():
+    import pandas as pd
+    from poorcast.simulate import SimConfig, Withdrawal, simulate
+
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    panel = pd.DataFrame({"a": np.zeros(480), "inflation": np.zeros(480)}, index=idx)
+    base = dict(allocation={"a": 1.0}, initial=1000.0, years=1, n_sims=2, seed=0,
+                age=80, account="traditional", tax_ordinary=0.25,
+                withdrawal=Withdrawal("none"))
+    lad = build_ladder(10.0, 5, 0.0, taxable=False)  # 50 of rungs outstanding
+    r_no = simulate(panel, SimConfig(**base))
+    r_lad = simulate(panel, SimConfig(**base, ladder=lad))
+    # No spending: the whole RMD is deemed. Without the ladder it is 1000/20.2;
+    # with it, the rungs' 50 join the RMD base and the 10 payout counts
+    # toward satisfying it.
+    assert np.allclose(r_no.total_tax_real, 0.25 * 1000.0 / 20.2)
+    assert np.allclose(r_lad.total_tax_real, 0.25 * 1050.0 / 20.2)

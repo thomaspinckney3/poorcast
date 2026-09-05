@@ -896,7 +896,13 @@ def main(argv: list[str] | None = None) -> int:
 
             from .ladder import build_ladder, build_ladder_curve, current_real_curve
 
-            ladder_taxable = not no_tax and not args.tips_ladder_deferred
+            # A traditional account's ladder is bought with IRA money, so it
+            # lives inside the IRA: the engine taxes its payouts as
+            # distributions rather than as phantom income.
+            ladder_taxable = (
+                not no_tax and not args.tips_ladder_deferred
+                and args.account != "traditional"
+            )
             if args.tips_ladder_curve:
                 ladder = build_ladder_curve(
                     args.tips_ladder, years, current_real_curve(), taxable=ladder_taxable

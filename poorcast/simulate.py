@@ -801,6 +801,22 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         if lad is not None and getattr(lad, "taxable", False) and getattr(lad, "faces", ()):
             ladder_coupons = lad.coupon_income_real()
             ladder_principal = lad.remaining_principal_real()
+    # An external ladder carved out of a single traditional account lives
+    # inside the IRA: its payouts are distributions (ordinary income,
+    # RMD-countable, early-penalized) and RMDs are owed on the rungs' value,
+    # exactly like a tips_ladder allocation held in a traditional account.
+    ira_ladder = None
+    ira_lad_val = None
+    if (
+        cfg.ladder is not None and not multi and trad
+        and getattr(cfg.ladder, "faces", ())
+    ):
+        ira_ladder = cfg.ladder
+        prin = np.asarray(ira_ladder.remaining_principal_real(), dtype=float)
+        ira_lad_val = np.zeros(n_months + 1)
+        for k in range(n_months + 1):
+            if k // 12 < ira_ladder.years:
+                ira_lad_val[k] = prin[k // 12]
 
     def prorata_flow(acct: _Acct, scale: np.ndarray) -> None:
         """Apply a pro-rata sale (scale<1) or buy (scale>1) to one account's
@@ -837,6 +853,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         ira_val = trad_tot
         if trad_i in acct_ladders:
             ira_val = ira_val + acct_lad_val[trad_i][m + 1] * cum_inflation[:, m + 1]
+        if ira_lad_val is not None:
+            ira_val = ira_val + ira_lad_val[m + 1] * cum_inflation[:, m + 1]
         deemed = np.minimum(np.maximum(rmd - dist_acc, 0.0), ira_val)
         if taxed:
             move = np.minimum(deemed, trad_tot)
@@ -900,6 +918,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 year_start_bal = (
                     year_start_bal + acct_lad_val[trad_i][m] * cum_inflation[:, m]
                 )
+            if ira_lad_val is not None:
+                year_start_bal = year_start_bal + ira_lad_val[m] * cum_inflation[:, m]
 
         # Withdrawal / contribution at the start of the month, pro-rata across
         # holdings so the flow itself doesn't rebalance the portfolio.
@@ -1008,6 +1028,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                         from_basis = np.minimum(pay_r, roth_basis[ri])
                         roth_basis[ri] = roth_basis[ri] - from_basis
                         penalty_acc += 0.10 * (pay_r - from_basis)
+        if ira_ladder is not None and m < ira_ladder.years * 12:
+            pay_i = ira_ladder.annual / 12.0 * cum_inflation[:, m]
+            dist_acc += pay_i
+            if pen_active and m < pen_cut:
+                penalty_acc += 0.10 * pay_i
 
         wd_to_sell = draws
         if taxed:

@@ -342,7 +342,10 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         )
     if cfg.ladder is not None:
         lad = cfg.ladder
-        acct = "taxable" if getattr(lad, "taxable", False) else "tax-deferred"
+        if cfg.account == "traditional" and not cfg.accounts:
+            acct = "in the IRA, payouts taxed as distributions"
+        else:
+            acct = "taxable" if getattr(lad, "taxable", False) else "tax-deferred"
         wd += (
             f" · TIPS ladder floor ${lad.annual:,.0f}/yr "
             f"({lad.years}y at {lad.real_yield:.2%} real, cost ${lad.cost:,.0f}, {acct})"

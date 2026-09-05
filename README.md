@@ -179,7 +179,9 @@ poorcast run --allocation us_equities=70,us_bonds_10yr=30 \
 Bracket `--tips-ladder-yield` with 0–2 (%) to see regime sensitivity, or use
 `--tips-ladder-curve` to price it off today's actual TIPS yield curve (FRED).
 By default the ladder is taxable (coupons + inflation accrual taxed as
-ordinary income); `--tips-ladder-deferred` holds it in an IRA.
+ordinary income); `--tips-ladder-deferred` holds it in an IRA. With
+`--account traditional` the ladder is necessarily bought with IRA money, so
+its payouts are taxed as distributions and its rungs count toward RMDs.
 
 **Or hold the ladder as an allocation**: the reserved asset name
 `tips_ladder` in any allocation buys rungs with that share of the balance at
