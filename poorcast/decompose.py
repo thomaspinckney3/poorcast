@@ -16,15 +16,14 @@ import io
 import numpy as np
 import pandas as pd
 
-from .data import SHILLER_URL, _download, fetch_fred, load_panel
+from .data import SHILLER_URL, _download, fetch_fred, load_panel, shiller_month_index
 
 
 def _shiller_pde(refresh: bool = False) -> pd.DataFrame:
     blob = _download(SHILLER_URL, "shiller_ie_data.xls", refresh, ua="Mozilla/5.0")
     df = pd.read_excel(io.BytesIO(blob), sheet_name="Data", header=None, engine="xlrd")
-    rows = df[0].astype(str).str.fullmatch(r"\d{4}\.\d{2}")
+    rows, idx = shiller_month_index(df[0])
     df = df[rows]
-    idx = pd.PeriodIndex([f"{d[:4]}-{d[5:7]}" for d in df[0].astype(str)], freq="M")
     out = pd.DataFrame(
         {
             "P": pd.to_numeric(df[1], errors="coerce").to_numpy(),

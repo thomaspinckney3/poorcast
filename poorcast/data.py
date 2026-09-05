@@ -155,18 +155,33 @@ INCOME_CLASS = {
 SHILLER_URL = "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
 
 
+def shiller_month_index(col: pd.Series) -> tuple[np.ndarray, pd.PeriodIndex]:
+    """Decode Shiller's fractional-year date column (1871.01 .. 1871.12).
+
+    Excel hands the column back as floats, so October is 1871.1 - a text
+    match on two decimals silently drops every October. Decode numerically:
+    returns (mask of data rows, their months)."""
+    v = pd.to_numeric(col, errors="coerce")
+    year = np.floor(v)
+    month = np.round((v - year) * 100)
+    ok = v.notna() & (year >= 1800) & (year <= 2200) & (month >= 1) & (month <= 12)
+    idx = pd.PeriodIndex(
+        [
+            pd.Period(year=int(y), month=int(m), freq="M")
+            for y, m in zip(year[ok], month[ok])
+        ],
+        freq="M",
+    )
+    return ok.to_numpy(), idx
+
+
 def fetch_shiller_dividend_yield(refresh: bool = False) -> pd.Series:
     """Monthly S&P dividend yield from Shiller's ie_data (D is a 12-month rate,
     so the monthly accrual is D/12 divided by price)."""
     blob = _download(SHILLER_URL, "shiller_ie_data.xls", refresh, ua="Mozilla/5.0")
     df = pd.read_excel(io.BytesIO(blob), sheet_name="Data", header=None, engine="xlrd")
-    date_col = df[0].astype(str)
-    rows = date_col.str.fullmatch(r"\d{4}\.\d{2}")
+    rows, idx = shiller_month_index(df[0])
     df = df[rows]
-    # 1871.1 means October (Shiller's fractional format); zero-pad handled by regex
-    idx = pd.PeriodIndex(
-        [f"{d[:4]}-{d[5:7]}" for d in df[0].astype(str)], freq="M"
-    )
     p = pd.to_numeric(df[1], errors="coerce")
     d = pd.to_numeric(df[2], errors="coerce")
     out = pd.Series((d / 12 / p).to_numpy(), index=idx, name="shiller_div_yield")
