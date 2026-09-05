@@ -242,3 +242,24 @@ def test_large_amounts_keep_every_digit(tmp_path):
     assert parse_at_age(cfg["income"][0]) == (2_345_678.5, 67)
     assert parse_at_age(cfg["expense"][0]) == (12_345_678, 70)
     assert cfg["accounts"][0]["schedule"] == "1111111:60-65"
+
+
+def test_account_glide_to_and_household_equity_glide_parse(tmp_path):
+    text = """
+    [[account]]
+    type = "taxable"
+    balance = 1_000
+    allocation = { us_equities = 60, muni_bonds = 40 }
+    glide_to = { us_equities = 80, muni_bonds = 20 }
+    [glide]
+    years = 10
+    """
+    cfg = load_config(write(tmp_path, text))
+    assert cfg["accounts"][0]["allocation_end"] == {"us_equities": 0.8, "muni_bonds": 0.2}
+    assert cfg["glide_years"] == 10
+    cfg = load_config(write(tmp_path, "[glide]\nequity = 80\nyears = 15\n"))
+    assert cfg["glide_equity"] == 80 and cfg["glide_years"] == 15
+    with pytest.raises(ConfigError, match="not both"):
+        load_config(write(tmp_path, "[glide]\nequity = 80\nto = { us_equities = 100 }\n"))
+    with pytest.raises(ConfigError, match="percent"):
+        load_config(write(tmp_path, "[glide]\nequity = 180\n"))

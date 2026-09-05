@@ -268,6 +268,8 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             desc = f"${a.balance:,.0f} {a.kind}"
             if a.allocation:
                 desc += f" ({_alloc_str(a.allocation)})"
+            if a.allocation_end:
+                desc += f" gliding to {_alloc_str(a.allocation_end)}"
             if a.schedule:
                 steps = ", ".join(
                     f"${amt:,.0f}/yr from {_when(sm)}" for sm, amt in a.schedule if amt
@@ -278,6 +280,9 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         order = cfg.withdraw_order or DEFAULT_WITHDRAW_ORDER
         kinds = {a.kind for a in cfg.accounts}
         alloc += " · spend " + " then ".join(k for k in order if k in kinds)
+        if any(a.allocation_end for a in cfg.accounts):
+            span = f"{cfg.glide_years}y" if cfg.glide_years else "full horizon"
+            alloc += f" · glide over {span}"
     else:
         alloc = _alloc_str(cfg.allocation)
     if cfg.allocation_end is not None:

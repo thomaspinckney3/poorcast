@@ -228,6 +228,17 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "e.g. a rising-equity 'bond tent'",
     )
     r.add_argument(
+        "--glide-equity",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help="glidepath by equity share: drift the equity/defensive split "
+        "linearly to PCT%% equities over --glide-years, keeping each "
+        "bucket's own asset proportions. Works for households too: every "
+        "account with a liquid sleeve glides (529s and accounts with their "
+        "own glide_to are left alone)",
+    )
+    r.add_argument(
         "--glide-years",
         type=int,
         default=None,
@@ -699,12 +710,15 @@ def main(argv: list[str] | None = None) -> int:
                     return 2
             specs.append(Account(**a))
         accounts = tuple(specs)
-        for flag, val in [("--glide-to", args.glide_to is not None),
-                          ("--tips-ladder", args.tips_ladder is not None)]:
-            if val:
-                print(f"error: {flag} is a single-account feature; drop the "
-                      "[[account]] sections to use it")
-                return 2
+        if args.glide_to is not None:
+            print("error: a household glides per account: put glide_to on each "
+                  "[[account]] (with [glide] years), or use --glide-equity / "
+                  "[glide] equity for a household-wide equity glide")
+            return 2
+        if args.tips_ladder is not None:
+            print("error: --tips-ladder is a single-account feature; drop the "
+                  "[[account]] sections to use it")
+            return 2
         if args.optimize and not getattr(args, "optimize_grid", None):
             print("error: household optimization needs an [optimize] section "
                   "declaring the search space, e.g. equity = [40, 80, 10] "
@@ -718,9 +732,43 @@ def main(argv: list[str] | None = None) -> int:
     elif (args.allocation is None) == (not args.optimize):
         print("error: provide exactly one of --allocation or --optimize")
         return 2
-    if args.optimize and args.glide_to is not None:
-        print("error: --optimize searches static allocations; drop --glide-to")
+    glide_equity = getattr(args, "glide_equity", None)
+    any_glide = (
+        args.glide_to is not None or glide_equity is not None
+        or any(a.allocation_end is not None for a in accounts or ())
+    )
+    if args.optimize and any_glide:
+        print("error: --optimize searches static allocations; drop the glidepath")
         return 2
+    if glide_equity is not None:
+        from dataclasses import replace
+
+        from .optimize import household_bucket_templates, rescale_equity
+
+        if not 0 <= glide_equity <= 100:
+            print("error: --glide-equity is a percent (0-100)")
+            return 2
+        try:
+            if accounts is not None:
+                agg_eq, agg_de = household_bucket_templates(accounts, args.allocation)
+                glided = []
+                for a in accounts:
+                    alloc = a.allocation or args.allocation or {}
+                    liquid = {k: v for k, v in alloc.items() if k != "tips_ladder"}
+                    if a.kind == "529" or a.allocation_end is not None or not liquid:
+                        glided.append(a)
+                        continue
+                    glided.append(replace(a, allocation_end=rescale_equity(
+                        alloc, glide_equity / 100.0, agg_eq, agg_de)))
+                accounts = tuple(glided)
+            else:
+                if args.glide_to is not None:
+                    print("error: give --glide-to or --glide-equity, not both")
+                    return 2
+                args.glide_to = rescale_equity(args.allocation, glide_equity / 100.0)
+        except ValueError as e:
+            print(f"error: {e}")
+            return 2
 
     return_adjustments = None
     if args.multiple_expansion is not None and args.pe_path is None:

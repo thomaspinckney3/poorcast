@@ -152,3 +152,19 @@ def test_screen_is_deterministic_without_a_seed():
     _, b1 = optimize_household(panel, base, **kw)
     _, b2 = optimize_household(panel, base, **kw)
     assert [r["success"] for r in b1] == [r["success"] for r in b2]
+
+
+def test_rescale_equity_keeps_bucket_proportions():
+    from poorcast.optimize import equity_share, rescale_equity
+
+    alloc = {"us_equities": 0.45, "intl_equities": 0.15, "muni_bonds": 0.3,
+             "cash": 0.1, "tips_ladder": 0.0}
+    assert equity_share(alloc) == pytest.approx(0.6)
+    out = rescale_equity(alloc, 0.8)
+    assert out == pytest.approx({"us_equities": 0.6, "intl_equities": 0.2,
+                                 "muni_bonds": 0.15, "cash": 0.05})
+    # a missing bucket falls back to the template
+    out = rescale_equity({"muni_bonds": 1.0}, 0.5, fallback_eq={"us_equities": 1.0})
+    assert out == pytest.approx({"us_equities": 0.5, "muni_bonds": 0.5})
+    with pytest.raises(ValueError, match="no equity"):
+        rescale_equity({"muni_bonds": 1.0}, 0.5)

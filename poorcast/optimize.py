@@ -135,15 +135,35 @@ def _norm(d: dict) -> dict:
     return {k: v / s for k, v in d.items()} if s > 0 else {}
 
 
-def household_candidate(accounts, base_alloc, equity: float, ladder_total: float):
-    """Rebuild the accounts for a household equity share and total ladder cost.
+def equity_share(alloc: dict) -> float:
+    """Equity fraction of an allocation's liquid sleeve (ladder excluded)."""
+    eq, de = _buckets(alloc)
+    tot = sum(eq.values()) + sum(de.values())
+    return sum(eq.values()) / tot if tot > 0 else 0.0
 
-    The account structure is fixed; each non-529 account's liquid sleeve is
-    rescaled to `equity` equities / (1 - equity) defensive, preserving its
-    own intra-bucket proportions (falling back to the household's when an
-    account lacks a bucket). Ladder dollars fill traditional accounts first,
-    then taxable (clipped to capacity); 529s are left untouched.
-    """
+
+def rescale_equity(alloc: dict, equity: float, fallback_eq=None, fallback_de=None) -> dict:
+    """Liquid-sleeve weights (summing to 1) at `equity` equities / (1-equity)
+    defensive, preserving alloc's own intra-bucket proportions (falling back
+    to the given bucket templates when alloc lacks a bucket)."""
+    eqp = _norm(_buckets(alloc)[0]) or (fallback_eq or {})
+    dep = _norm(_buckets(alloc)[1]) or (fallback_de or {})
+    if equity > 0 and not eqp:
+        raise ValueError("no equity assets to glide into (add an equity template)")
+    if equity < 1 and not dep:
+        raise ValueError("no defensive assets to glide into (add a defensive template)")
+    new: dict = {}
+    for k, v in eqp.items():
+        new[k] = new.get(k, 0.0) + equity * v
+    for k, v in dep.items():
+        new[k] = new.get(k, 0.0) + (1.0 - equity) * v
+    return new
+
+
+def household_bucket_templates(accounts, base_alloc) -> tuple[dict, dict]:
+    """The household's balance-weighted equity and defensive bucket
+    proportions (non-529 accounts): the fallback templates for an account
+    that lacks a bucket of its own."""
     agg_eq: dict = {}
     agg_de: dict = {}
     for a in accounts:
@@ -155,7 +175,19 @@ def household_candidate(accounts, base_alloc, equity: float, ladder_total: float
             agg_eq[k] = agg_eq.get(k, 0.0) + v * a.balance
         for k, v in de.items():
             agg_de[k] = agg_de.get(k, 0.0) + v * a.balance
-    agg_eq, agg_de = _norm(agg_eq), _norm(agg_de)
+    return _norm(agg_eq), _norm(agg_de)
+
+
+def household_candidate(accounts, base_alloc, equity: float, ladder_total: float):
+    """Rebuild the accounts for a household equity share and total ladder cost.
+
+    The account structure is fixed; each non-529 account's liquid sleeve is
+    rescaled to `equity` equities / (1 - equity) defensive, preserving its
+    own intra-bucket proportions (falling back to the household's when an
+    account lacks a bucket). Ladder dollars fill traditional accounts first,
+    then taxable (clipped to capacity); 529s are left untouched.
+    """
+    agg_eq, agg_de = household_bucket_templates(accounts, base_alloc)
     # Every candidate carries the full union of liquid assets (zero-weighted
     # where unused) so the engine resolves the SAME sampling window for every
     # candidate - otherwise common random numbers silently break at grid
@@ -177,15 +209,11 @@ def household_candidate(accounts, base_alloc, equity: float, ladder_total: float
             out.append(a)
             continue
         alloc = a.allocation or base_alloc or {}
-        eqp = _norm(_buckets(alloc)[0]) or agg_eq
-        dep = _norm(_buckets(alloc)[1]) or agg_de
         wl = assigned.get(i, 0.0) / a.balance if a.balance > 0 else 0.0
         liquid = 1.0 - wl
         new: dict = {k: 0.0 for k in union}
-        for k, v in eqp.items():
-            new[k] = new.get(k, 0.0) + liquid * equity * v
-        for k, v in dep.items():
-            new[k] = new.get(k, 0.0) + liquid * (1.0 - equity) * v
+        for k, v in rescale_equity(alloc, equity, agg_eq, agg_de).items():
+            new[k] = new.get(k, 0.0) + liquid * v
         if wl > 1e-12:
             new[LADDER] = wl
         out.append(replace(a, allocation=new))

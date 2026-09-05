@@ -165,7 +165,7 @@ def test_validation_rejects_bad_household():
     with pytest.raises(ValueError, match="withdraw_order"):
         simulate(panel, cfg(accounts=(Account("roth", 1.0),),
                             withdraw_order=("taxable",)))
-    with pytest.raises(ValueError, match="single-account"):
+    with pytest.raises(ValueError, match="per account"):
         simulate(panel, cfg(accounts=(Account("roth", 1.0),),
                             allocation_end={"a": 1.0}))
 
@@ -470,3 +470,66 @@ def test_gross_of_tax_requires_fixed_real():
         simulate(panel, cfg(
             withdrawal=Withdrawal("percent_of_balance", rate=0.04,
                                   gross_of_tax=True)))
+
+
+# --- per-account glidepaths --------------------------------------------------
+
+
+def _glide_growth(**kw):
+    # asset a earns 0, asset b earns 1%/month; monthly rebalancing to the
+    # gliding target means month m+1's growth reveals the weight set at m.
+    panel = make_panel(ret_a=0.0, ret_b=0.01)
+    return simulate(panel, cfg(years=4, glide_years=2, rebalance_months=1, **kw))
+
+
+def test_account_glide_moves_linearly_then_holds():
+    acct = Account("roth", 1000.0, allocation={"a": 1.0, "b": 0.0},
+                   allocation_end={"a": 0.0, "b": 1.0})
+    r = _glide_growth(accounts=(acct,))
+    growth = r.balance[0, 2:] / r.balance[0, 1:-1]  # month m+1 growth, m = 0..46
+    frac = np.minimum(np.arange(47) / 23.0, 1.0)  # 24-month glide
+    assert np.allclose(growth, 1 + 0.01 * frac)
+
+
+def test_gliding_account_leaves_static_accounts_alone():
+    glide = Account("taxable", 1000.0, allocation={"a": 1.0, "b": 0.0},
+                    allocation_end={"a": 0.0, "b": 1.0})
+    static = Account("roth", 1000.0, allocation={"a": 1.0, "b": 0.0})
+    both = _glide_growth(accounts=(glide, static))
+    alone = _glide_growth(accounts=(glide,))
+    assert np.allclose(both.account_terminal[:, 1], 1000.0)  # static, all a
+    assert np.allclose(both.account_terminal[:, 0], alone.balance[:, -1])
+
+
+def test_glide_applies_to_the_liquid_sleeve_beside_a_ladder():
+    panel = make_panel()
+    lad = Account("roth", 1000.0, allocation={"a": 0.5, "tips_ladder": 0.5},
+                  allocation_end={"a": 0.5, "b": 0.5})
+    r = simulate(panel, cfg(accounts=(lad,), years=4, glide_years=2,
+                            ladder_yield=0.0, ladder_years=4))
+    static = simulate(panel, cfg(accounts=(Account("roth", 1000.0,
+                                                  allocation={"a": 0.5, "tips_ladder": 0.5}),),
+                                 years=4, ladder_yield=0.0, ladder_years=4))
+    assert r.ladder_annual == static.ladder_annual  # rungs untouched by the glide
+    assert np.allclose(r.balance[:, -1], static.balance[:, -1])  # zero returns
+
+
+def test_account_glide_validation():
+    panel = make_panel()
+    with pytest.raises(ValueError, match="sum to"):
+        simulate(panel, cfg(accounts=(
+            Account("roth", 1.0, allocation={"a": 1.0}, allocation_end={"a": 0.5}),)))
+    with pytest.raises(ValueError, match="fixed at purchase"):
+        simulate(panel, cfg(accounts=(
+            Account("roth", 1.0, allocation={"a": 0.5, "tips_ladder": 0.5},
+                    allocation_end={"a": 0.5, "tips_ladder": 0.5}),), ladder_yield=0.0))
+    with pytest.raises(ValueError, match="no liquid sleeve"):
+        simulate(panel, cfg(accounts=(
+            Account("traditional", 1.0, allocation={"tips_ladder": 1.0},
+                    allocation_end={"a": 1.0}),
+            Account("roth", 1.0, allocation={"a": 1.0})),
+            age=65, tax_ordinary=0.2, ladder_yield=0.0))
+    with pytest.raises(ValueError, match="glide_years"):
+        simulate(panel, cfg(accounts=(
+            Account("roth", 1.0, allocation={"a": 1.0}, allocation_end={"b": 1.0}),),
+            glide_years=0))

@@ -203,8 +203,9 @@ curve = true      # or yield = 2.0; years = N (default: the horizon)
 
 Taxation follows the holding account: taxable = phantom income; traditional
 = payouts are RMD-countable ordinary-income distributions (RMDs are owed on
-the rungs' value too); Roth = free. Not combinable with `--tips-ladder`,
-glidepaths, or 529 accounts.
+the rungs' value too); Roth = free. Not combinable with `--tips-ladder` or
+529 accounts. A glidepath in the same account moves the liquid sleeve only;
+the rungs are a purchase-time share and stay put.
 
 Rungs beyond the curve's 30-year point cannot be bought today; **the default
 assumes they are bridged** — extra 30-year TIPS held (duration-scaled) and
@@ -238,6 +239,11 @@ poorcast run --allocation us_equities=40,us_bonds_10yr=60 \
     --glide-to us_equities=70,us_bonds_10yr=30 --glide-years 10 \
     --withdraw 4% --horizons 30
 ```
+
+`--glide-equity 70 --glide-years 10` says the same thing by equity share:
+the equity/defensive split drifts to 70/30 while each bucket keeps its own
+asset proportions. That form also works for multi-account households (see
+below).
 
 **Assume stocks won't keep getting more expensive** — historically, P/E
 multiple expansion contributed ~0.5%/yr to US equity returns. Rerun assuming
@@ -330,8 +336,8 @@ Explicit command-line flags override the file, so what-ifs don't require
 editing the plan: `poorcast run --config plan.toml --withdraw 3.5%`. The
 repeatable flags (`--income`, `--pension`, `--expense`) *add* to the file's
 streams rather than replacing them. A `[tips_ladder]` section (`annual`,
-`yield`, `curve`, `deferred`) and a `[glide]` section (`to`, `years`) cover
-the remaining features; unknown keys are hard errors with a did-you-mean
+`yield`, `curve`, `deferred`) and a `[glide]` section (`to` or `equity`,
+`years`) cover the remaining features; unknown keys are hard errors with a did-you-mean
 hint, so a typo can't silently skew a forecast.
 
 ## Multi-account households
@@ -396,8 +402,16 @@ How it behaves:
 - The report adds median terminal wealth per account; success still means
   the *household* never depleted (every account empty).
 
-At most one taxable and one traditional account. Glidepaths, allocation
-rules, and `--tips-ladder` remain single-account features for now.
+- **Glidepaths are per account.** `glide_to = { ... }` on an `[[account]]`
+  drifts that account's liquid mix linearly to the target over `[glide]
+  years` (default: the whole horizon); accounts without one stay static, and
+  a `tips_ladder` share is untouched. `[glide] equity = 80` (or
+  `--glide-equity 80` as a what-if) glides every account's equity share
+  instead, preserving each account's own asset proportions - 529s and
+  accounts with an explicit `glide_to` are left alone.
+
+At most one taxable and one traditional account. Allocation rules and
+`--tips-ladder` remain single-account features for now.
 
 **Household optimization**: with `[[account]]` sections, `--optimize`
 searches a declared space of (household equity share × total ladder

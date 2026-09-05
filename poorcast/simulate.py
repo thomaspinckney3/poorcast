@@ -95,6 +95,12 @@ class Account:
     # draw from that account. If the account can't cover its schedule, the
     # shortfall falls back to the household waterfall.
     schedule: tuple[tuple[int, float], ...] | None = None
+    # This account's glidepath: liquid target weights drift linearly from
+    # `allocation` to `allocation_end` over the household's SimConfig
+    # .glide_years, then hold. Any tips_ladder share is a purchase-time
+    # cost share and stays out of it (allocation_end covers the liquid
+    # sleeve only and sums to 1). None = static weights.
+    allocation_end: dict[str, float] | None = None
 
 
 @dataclass
@@ -161,8 +167,9 @@ class SimConfig:
     # stack through one set of brackets) and paid from the taxable account
     # when there is one. Traditional RMD dollars beyond spending are actually
     # transferred to the taxable account (basis = value). At most one taxable
-    # and one traditional account; glidepaths/allocation rules and the
-    # cfg-level ladder are single-account features.
+    # and one traditional account; allocation rules, the cfg-level
+    # allocation_end, and the cfg-level ladder are single-account features
+    # (accounts glide individually via Account.allocation_end).
     accounts: tuple[Account, ...] | None = None
     withdraw_order: tuple[str, ...] | None = None  # default taxable->traditional->roth->529
     # TIPS-ladder-as-allocation: the reserved asset name 'tips_ladder' in any
@@ -418,8 +425,13 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 raise ValueError(f"account balance must be positive, got {a.balance}")
         if kinds.count("taxable") > 1 or kinds.count("traditional") > 1:
             raise ValueError("at most one taxable and one traditional account")
-        if cfg.allocation_end is not None or cfg.allocation_rule is not None:
-            raise ValueError("glidepaths and allocation rules need single-account mode")
+        if cfg.allocation_end is not None:
+            raise ValueError(
+                "a household glides per account: set allocation_end on each "
+                "Account (glide_to in the config), not on the SimConfig"
+            )
+        if cfg.allocation_rule is not None:
+            raise ValueError("allocation rules need single-account mode")
         order = cfg.withdraw_order or DEFAULT_WITHDRAW_ORDER
         bad = [k for k in order if k not in ACCOUNT_KINDS]
         if bad:
@@ -430,7 +442,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             raise ValueError(f"withdraw_order must cover account kind(s) {unranked}")
         draw_order = sorted(range(len(specs)), key=lambda i: rank[kinds[i]])
         assets: list[str] = []
-        for src in [cfg.allocation or {}] + [a.allocation or {} for a in specs]:
+        for src in [cfg.allocation or {}] + [
+            a.allocation or {} for a in specs
+        ] + [a.allocation_end or {} for a in specs]:
             for k in src:
                 if k not in assets and k != LADDER_ASSET:
                     assets.append(k)
@@ -494,10 +508,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 "use either the external ladder (--tips-ladder) or a "
                 "tips_ladder allocation, not both"
             )
-        if cfg.allocation_end is not None or cfg.allocation_rule is not None:
-            raise ValueError(
-                "glidepaths/allocation rules don't support tips_ladder allocations"
-            )
+        if cfg.allocation_rule is not None:
+            raise ValueError("allocation rules don't support tips_ladder allocations")
         for wl, k in zip(lad_w, kinds):
             if wl > 0 and k == "529":
                 raise ValueError("tips_ladder is not supported in 529 accounts")
@@ -549,19 +561,45 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     # (single-account mode; each account in accounts mode holds its own
     # static weights).
     n_months_total = cfg.years * 12
+    if cfg.glide_years is not None and cfg.glide_years < 1:
+        raise ValueError(f"glide_years must be >= 1, got {cfg.glide_years}")
+    glide_m = min((cfg.glide_years or cfg.years) * 12, n_months_total)
+    glide_frac = np.minimum(np.arange(n_months_total) / max(glide_m - 1, 1), 1.0)
     if not multi and cfg.allocation_end is not None:
         if set(cfg.allocation_end) != set(assets):
             raise ValueError("allocation_end must use the same assets as allocation")
         w_end = np.array([cfg.allocation_end[a] for a in assets], dtype=float)
         if abs(w_end.sum() - 1.0) > 1e-6:
             raise ValueError(f"allocation_end weights sum to {w_end.sum():.4f}, expected 1")
-        if cfg.glide_years is not None and cfg.glide_years < 1:
-            raise ValueError(f"glide_years must be >= 1, got {cfg.glide_years}")
-        glide_m = min((cfg.glide_years or cfg.years) * 12, n_months_total)
-        frac = np.minimum(np.arange(n_months_total) / max(glide_m - 1, 1), 1.0)
-        target_w = weights[None, :] + frac[:, None] * (w_end - weights)[None, :]
+        target_w = weights[None, :] + glide_frac[:, None] * (w_end - weights)[None, :]
     else:
         target_w = np.tile(weights, (n_months_total, 1))
+    # Household mode: each account's own (n_months, n_assets) liquid targets,
+    # gliding from its start weights to its allocation_end; None = static.
+    acct_target_w: list = [None] * len(specs)
+    if multi:
+        for i, s in enumerate(specs):
+            if s.allocation_end is None:
+                continue
+            if LADDER_ASSET in s.allocation_end:
+                raise ValueError(
+                    f"account #{i + 1}: allocation_end covers the liquid sleeve; "
+                    "the tips_ladder share is fixed at purchase"
+                )
+            w_end = np.array([s.allocation_end.get(a, 0.0) for a in assets])
+            if abs(w_end.sum() - 1.0) > 1e-6:
+                raise ValueError(
+                    f"account #{i + 1}: allocation_end weights sum to "
+                    f"{w_end.sum():.4f}, expected 1"
+                )
+            if acct_w[i].sum() <= 0:
+                raise ValueError(
+                    f"account #{i + 1}: an all-ladder account has no liquid "
+                    "sleeve to glide"
+                )
+            acct_target_w[i] = (
+                acct_w[i][None, :] + glide_frac[:, None] * (w_end - acct_w[i])[None, :]
+            )
 
     tax_i = kinds.index("taxable") if "taxable" in kinds else None
     trad_i = kinds.index("traditional") if "traditional" in kinds else None
@@ -1165,6 +1203,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                         )
                 elif not multi:
                     targets = target_w[m][None, :]
+                elif acct_target_w[i] is not None:
+                    targets = acct_target_w[i][m][None, :]
                 else:
                     targets = acct.weights[None, :]
                 new_holdings = tot[:, None] * targets

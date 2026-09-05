@@ -253,7 +253,9 @@ def load_config(path: str) -> dict:
             if not isinstance(e, dict):
                 raise ConfigError(f"{where} must be a table")
             _reject_unknown(
-                e, {"type", "balance", "allocation", "cost_basis", "schedule"}, where
+                e,
+                {"type", "balance", "allocation", "cost_basis", "schedule", "glide_to"},
+                where,
             )
             for key in ("type", "balance"):
                 if key not in e:
@@ -269,6 +271,8 @@ def load_config(path: str) -> dict:
             if "schedule" in e:
                 # Kept as CLI schedule text; the CLI resolves ages via --age.
                 acct["schedule"] = _schedule_text(e["schedule"], f"{where}.schedule")
+            if "glide_to" in e:
+                acct["allocation_end"] = _allocation(e["glide_to"], f"{where}.glide_to")
             accounts.append(acct)
         out["accounts"] = accounts
     if "withdraw_order" in raw:
@@ -281,10 +285,21 @@ def load_config(path: str) -> dict:
 
     if "glide" in raw:
         g = raw["glide"]
-        _reject_unknown(g, {"to", "years"}, "[glide]")
-        if "to" not in g:
-            raise ConfigError("[glide] needs `to` (the ending allocation)")
-        out["glide_to"] = _allocation(g["to"], "glide.to")
+        _reject_unknown(g, {"to", "years", "equity"}, "[glide]")
+        if "to" in g and "equity" in g:
+            raise ConfigError("[glide] takes `to` or `equity`, not both")
+        if "to" not in g and "equity" not in g and "years" not in g:
+            raise ConfigError(
+                "[glide] needs `to` (an ending allocation), `equity` (an ending "
+                "household equity share, %), or `years` (with per-account glide_to)"
+            )
+        if "to" in g:
+            out["glide_to"] = _allocation(g["to"], "glide.to")
+        if "equity" in g:
+            eq = _num(g["equity"], "glide.equity")
+            if not 0 <= eq <= 100:
+                raise ConfigError("[glide] equity is a percent (0-100)")
+            out["glide_equity"] = eq
         if "years" in g:
             out["glide_years"] = _int(g["years"], "glide.years")
 
