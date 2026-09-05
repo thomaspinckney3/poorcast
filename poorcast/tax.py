@@ -12,9 +12,11 @@ Bracket edges and the standard deduction are indexed to each path's cumulative
 inflation (as the law indexes them to chained CPI); the NIIT threshold is NOT
 indexed (statutory), so it bites more over time - as under current law.
 
-Assumes investment income is the taxpayer's only income and all dividends are
-qualified. State tax, the $3,000 loss offset against ordinary income, and the
-short/long-term distinction are not modeled.
+Assumes all dividends are qualified; `other_ordinary` carries any
+non-investment ordinary income (IRA distributions, pensions). A flat state
+rate applies to dividends, gains, and other ordinary income (Treasury
+interest is state-exempt). The $3,000 loss offset against ordinary income
+and the short/long-term distinction are not modeled.
 """
 
 from __future__ import annotations
