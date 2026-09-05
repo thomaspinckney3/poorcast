@@ -224,3 +224,25 @@ def test_external_ladder_in_traditional_account_counts_toward_rmd():
     # toward satisfying it.
     assert np.allclose(r_no.total_tax_real, 0.25 * 1000.0 / 20.2)
     assert np.allclose(r_lad.total_tax_real, 0.25 * 1050.0 / 20.2)
+
+
+def test_ladder_runs_report_against_pre_ladder_starting_wealth():
+    import pandas as pd
+    from poorcast.report import _describe
+    from poorcast.simulate import SimConfig, Withdrawal, simulate, summarize
+
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    panel = pd.DataFrame({"a": np.zeros(480), "inflation": np.zeros(480)}, index=idx)
+    lad = build_ladder(100.0, 2, 0.0)  # costs 200
+    # The CLI deducts the ladder cost from `initial` and nets its income out
+    # of the withdrawal; here the residual portfolio is untouched.
+    cfg = SimConfig(allocation={"a": 1.0}, initial=1000.0, years=2, n_sims=2,
+                    seed=0, account="roth", ladder=lad,
+                    withdrawal=Withdrawal("fixed_real", amount=0.0))
+    r = simulate(panel, cfg)
+    s = summarize(r)
+    assert s["prob_loss"] == 1.0  # 1000 left of the 1200 you started with
+    assert np.isclose(s["median_cagr"], (1000.0 / 1200.0) ** 0.5 - 1)
+    text = _describe(r)
+    assert "start $1,200" in text
+    assert "withdrawing $0/yr beyond the ladder" in text

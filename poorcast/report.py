@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 
-from .simulate import DEFAULT_WITHDRAW_ORDER, SimResult, summarize, total_initial
+from .simulate import DEFAULT_WITHDRAW_ORDER, SimResult, starting_wealth, summarize
 
 # Reference dataviz palette (light mode): sequential blue ramp + ink tokens.
 SURFACE = "#fcfcfb"
@@ -205,7 +205,7 @@ def terminal_hist(result: SimResult, ax=None, real: bool = True):
     ax.hist(positive, bins=bins, color=BLUE_400, edgecolor=SURFACE, linewidth=0.8)
     ax.set_xscale("log")
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(_dollars))
-    initial = total_initial(result.config)
+    initial = starting_wealth(result.config)
     ax.axvline(initial, color=INK_2, linewidth=1, linestyle="--")
     ax.annotate(
         "  starting\n  balance",
@@ -291,8 +291,11 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
                 f"${amt:,.0f}/yr from {_when(sm)}" for sm, amt in w.schedule
             )
             wd = f"withdrawing {steps} (inflation-adjusted)"
-        elif not w.amount:
+        elif w.rate and not w.amount:
             wd = f"withdrawing {w.rate:.1%}/yr of initial (inflation-adjusted)"
+        elif cfg.ladder is not None:
+            # The CLI already netted the ladder's income out of the target.
+            wd = f"withdrawing ${w.amount:,.0f}/yr beyond the ladder (inflation-adjusted)"
         else:
             wd = f"withdrawing ${w.amount:,.0f}/yr (inflation-adjusted)"
         if w.gross_of_tax:
@@ -397,7 +400,7 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
     if cfg.rebalance_months == 3:
         rebal = "quarterly rebalancing"
     parts = [
-        f"{alloc} · start ${total_initial(cfg):,.0f}",
+        f"{alloc} · start ${starting_wealth(cfg):,.0f}",
         f"{wd} · {rebal}",
         f"{mode} · history {result.window.min()}–{result.window.max()}",
     ]

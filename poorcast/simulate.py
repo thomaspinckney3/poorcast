@@ -362,6 +362,13 @@ def total_initial(cfg: SimConfig) -> float:
     return cfg.initial
 
 
+def starting_wealth(cfg: SimConfig) -> float:
+    """What the household started with, for reporting: the simulated balance
+    plus the cost of an external ladder (the CLI deducts that cost from
+    `initial` before the run, so `initial` alone understates the start)."""
+    return total_initial(cfg) + (cfg.ladder.cost if cfg.ladder is not None else 0.0)
+
+
 def _schedule_array(
     schedule, n_months: int, what: str = "withdrawal schedule"
 ) -> np.ndarray:
@@ -1353,7 +1360,7 @@ def summarize(result: SimResult, real: bool = True) -> dict:
     terminal = bal[:, -1]
     pct = np.percentile(terminal, [5, 25, 50, 75, 95])
     years = result.config.years
-    initial = total_initial(result.config)
+    initial = starting_wealth(result.config)
     # Depleted paths count as -100%: excluding them would report survivor-only
     # growth next to all-path terminal percentiles.
     with np.errstate(divide="ignore"):
