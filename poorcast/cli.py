@@ -516,6 +516,18 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
     return p
 
 
+def _held_assets(cfg: SimConfig, panel) -> list[str]:
+    """Panel assets held anywhere in the run: the config-level allocation
+    and every account's (households may have no config-level allocation;
+    the reserved tips_ladder name is not a panel column)."""
+    held: list[str] = []
+    for alloc in [cfg.allocation or {}] + [a.allocation or {} for a in cfg.accounts or ()]:
+        for k in alloc:
+            if k in panel.columns and k not in held:
+                held.append(k)
+    return held
+
+
 def _config_path(argv: list[str]) -> str | None:
     for i, tok in enumerate(argv):
         if tok == "--config" and i + 1 < len(argv):
@@ -1058,7 +1070,10 @@ def main(argv: list[str] | None = None) -> int:
         import pandas as pd
 
         if result.window.min() > pd.Period(args.start, freq="M"):
-            limiting = max(cfg.allocation, key=lambda a: panel[a].dropna().index.min())
+            limiting = max(
+                _held_assets(cfg, panel),
+                key=lambda a: panel[a].dropna().index.min(),
+            )
             print(
                 f"  Note: sampling starts {result.window.min()} (not {args.start}) because "
                 f"'{limiting}' has no earlier data. Run 'poorcast assets' for coverage."
