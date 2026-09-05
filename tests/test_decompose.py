@@ -21,3 +21,16 @@ def test_decomposition_components_sum_to_total():
     total = (d["dividend_yield"] + d["inflation"] + d["real_eps_growth"]
              + d["multiple_expansion"])
     assert abs(total - d["sum_of_components"]) < 1e-12
+
+
+def test_cape_from_pde_is_ten_year_real_pe():
+    import numpy as np
+    import pandas as pd
+    from poorcast.decompose import cape_from_pde
+
+    idx = pd.period_range("2000-01", periods=132, freq="M")
+    sh = pd.DataFrame({"P": np.full(132, 200.0), "E": np.full(132, 10.0),
+                       "CPI": np.full(132, 100.0)}, index=idx)
+    s = cape_from_pde(sh)
+    assert len(s) == 13  # needs 120 months of earnings
+    assert np.allclose(s, 20.0)

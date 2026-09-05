@@ -152,7 +152,43 @@ INCOME_CLASS = {
     "muni_bonds": "muni",  # exempt from federal and (own-state assumption) state
 }
 
-SHILLER_URL = "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
+# Shiller's data moved from Yale to shillerdata.com in 2023 (the Yale file
+# froze at September 2023). The spreadsheet link on the new site carries a
+# version token, so the fetch scrapes the page for the current link and
+# falls back to the last known one.
+SHILLER_PAGE = "https://shillerdata.com/"
+SHILLER_URL = (
+    "https://img1.wsimg.com/blobby/go/e5e77e0b-59d1-44d9-ab25-4763ac982e53/"
+    "downloads/70fec4f5-727f-4e53-b5f1-179af109c5fa/ie_data.xls"
+)
+
+
+def shiller_link_from_page(html: str) -> str | None:
+    """The ie_data.xls download link on shillerdata.com, or None."""
+    m = re.search(r'href="((?:https?:)?//[^"]*?/ie_data\.xls[^"]*)"', html)
+    if not m:
+        return None
+    url = m.group(1).replace("&amp;", "&")
+    return "https:" + url if url.startswith("//") else url
+
+
+def shiller_workbook(refresh: bool = False) -> bytes:
+    """Shiller's ie_data.xls (monthly S&P price, dividends, earnings, CPI,
+    long rate, and his CAPE), cached as shiller_ie_data.xls."""
+    cached = CACHE_DIR / "shiller_ie_data.xls"
+    if cached.exists() and not refresh:
+        return cached.read_bytes()
+    url = SHILLER_URL
+    try:
+        req = urllib.request.Request(
+            SHILLER_PAGE, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            page = resp.read().decode("utf-8", "replace")
+        url = shiller_link_from_page(page) or url
+    except Exception:
+        pass  # fall back to the last known link
+    return _download(url, "shiller_ie_data.xls", True, ua="Mozilla/5.0 (X11; Linux x86_64)")
 
 
 def shiller_month_index(col: pd.Series) -> tuple[np.ndarray, pd.PeriodIndex]:
@@ -178,7 +214,7 @@ def shiller_month_index(col: pd.Series) -> tuple[np.ndarray, pd.PeriodIndex]:
 def fetch_shiller_dividend_yield(refresh: bool = False) -> pd.Series:
     """Monthly S&P dividend yield from Shiller's ie_data (D is a 12-month rate,
     so the monthly accrual is D/12 divided by price)."""
-    blob = _download(SHILLER_URL, "shiller_ie_data.xls", refresh, ua="Mozilla/5.0")
+    blob = shiller_workbook(refresh)
     df = pd.read_excel(io.BytesIO(blob), sheet_name="Data", header=None, engine="xlrd")
     rows, idx = shiller_month_index(df[0])
     df = df[rows]

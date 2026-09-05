@@ -117,11 +117,16 @@ def parse_schedule(text: str, age: int, initial: float) -> tuple[tuple[int, floa
     return tuple(sched)
 
 
-def parse_pe_path(text: str) -> list[tuple[float, float]]:
-    """'30@0,20@10,30@40' -> [(year, pe), ...] sorted, validated."""
+def parse_pe_path(text: str, current: "float | None" = None) -> list[tuple[float, float]]:
+    """'30@0,20@10,30@40' -> [(year, pe), ...] sorted, validated. The P/E
+    'now' means today's CAPE (`current`, resolved by the caller)."""
     points = []
     for part in text.split(","):
         pe_s, yr_s = part.split("@", 1)
+        if pe_s.strip().lower() == "now":
+            if current is None:
+                raise ValueError("a P/E of 'now' needs the current CAPE")
+            pe_s = repr(current)
         pe, yr = float(pe_s), float(yr_s)
         if pe <= 0 or yr < 0:
             raise ValueError(f"bad P/E path point {part!r}")
@@ -847,15 +852,20 @@ def main(argv: list[str] | None = None) -> int:
     pe_points = None
     stress_points = None
     hist_me = 0.0
+    cape_now = None
     if args.pe_path is not None or getattr(args, "optimize_stress", None):
-        from .decompose import equity_return_decomposition
+        from .decompose import current_cape, equity_return_decomposition
 
         hist_me = equity_return_decomposition()["multiple_expansion"]
+        paths = [args.pe_path or "", getattr(args, "optimize_stress", None) or ""]
+        if any("now" in t.lower() for t in paths):
+            cape_now, cape_month = current_cape()
+            print(f"Today's CAPE: {cape_now:.1f} (Shiller data, {cape_month})")
     if args.pe_path is not None:
         if args.multiple_expansion is not None:
             print("note: --pe-path supersedes the multiple-expansion setting")
         try:
-            pe_points = parse_pe_path(args.pe_path)
+            pe_points = parse_pe_path(args.pe_path, cape_now)
         except ValueError as e:
             print(f"error: {e}")
             return 2
@@ -869,7 +879,7 @@ def main(argv: list[str] | None = None) -> int:
             print("error: --optimize-stress applies to household --optimize runs")
             return 2
         try:
-            stress_points = parse_pe_path(args.optimize_stress)
+            stress_points = parse_pe_path(args.optimize_stress, cape_now)
         except ValueError as e:
             print(f"error: {e}")
             return 2

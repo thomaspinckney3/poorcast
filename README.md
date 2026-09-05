@@ -29,8 +29,8 @@ python -m venv .venv && .venv/bin/pip install -e .
 ```
 
 `fetch` pulls monthly return history (1926+) straight from the publishers (Ken
-French library, FRED, AQR, Shiller) and caches it under `data/`; nothing is
-bundled with the repo. Run `poorcast assets` to see the asset classes and
+French library, FRED, AQR, Shiller's data at shillerdata.com) and caches it
+under `data/`; nothing is bundled with the repo. Run `poorcast assets` to see the asset classes and
 their coverage.
 
 ## Quick start
@@ -274,8 +274,10 @@ poorcast run --allocation us_equities=100 --withdraw 4% \
 table in config) drives the multiple-expansion component of US equity
 returns along an assumed P/E path — piecewise-linear in log-P/E, net of the
 historical rate. Adding `--pe-conditioned` goes further than a mean shift:
-bootstrap blocks are drawn from historical months whose Shiller P/E
-resembles the assumed level at that point of the path (Gaussian kernel,
+bootstrap blocks are drawn from historical months whose Shiller CAPE (the
+10-year cyclically adjusted P/E, from Shiller's published column; `now` in a
+path means today's value) resembles the assumed level at that point of the
+path (Gaussian kernel,
 `--pe-bandwidth`, default 0.15 log units), and equity returns are
 re-centered so the path's multiple change replaces the sampled regimes'
 own. Conditioned runs inherit the *dynamics* (volatility, correlations,

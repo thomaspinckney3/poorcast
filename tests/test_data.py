@@ -29,3 +29,11 @@ def test_custom_override_replaces_and_extends_a_series(tmp_path, monkeypatch):
     assert out[pd.Period("1960-01", "M")] == 0.01     # untouched
     # no file -> unchanged
     assert data._apply_custom_override("us_equities", built).equals(built)
+
+
+def test_shiller_link_scraped_from_page():
+    html = ('<a href="//img1.wsimg.com/blobby/go/abc/downloads/def/ie_data.xls?ver=123">'
+            'US Stock Markets</a> <a href="//x/Fig3-1.xls">other</a>')
+    assert data.shiller_link_from_page(html) == (
+        "https://img1.wsimg.com/blobby/go/abc/downloads/def/ie_data.xls?ver=123")
+    assert data.shiller_link_from_page("<p>nothing</p>") is None

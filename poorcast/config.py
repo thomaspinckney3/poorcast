@@ -151,7 +151,9 @@ def _pe_path_text(pts, where: str) -> str:
         for key in ("year", "pe"):
             if key not in p:
                 raise ConfigError(f"{w} needs `{key}`")
-        parts.append(f"{_num(p['pe'], w + '.pe')!r}@{_num(p['year'], w + '.year')!r}")
+        pe = p["pe"]
+        pe_text = "now" if isinstance(pe, str) and pe.lower() == "now" else repr(_num(pe, w + ".pe"))
+        parts.append(f"{pe_text}@{_num(p['year'], w + '.year')!r}")
     return ",".join(parts)
 
 

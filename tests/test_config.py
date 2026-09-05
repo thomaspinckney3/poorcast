@@ -279,3 +279,13 @@ def test_optimize_tolerance_anchor_and_stress_parse(tmp_path):
     assert cfg["optimize_grid"] == {"equity": [40.0, 80.0, 20.0]}
     with pytest.raises(ConfigError, match="points"):
         load_config(write(tmp_path, "[optimize]\nequity = [40, 80, 20]\ntolerance = 150\n"))
+
+
+def test_pe_path_accepts_now_for_todays_cape(tmp_path):
+    from poorcast.cli import parse_pe_path
+
+    cfg = load_config(write(tmp_path, 'pe_path = [{year = 0, pe = "now"}, {year = 5, pe = 30}]\n'))
+    assert cfg["pe_path"] == "now@0.0,30.0@5.0"
+    assert parse_pe_path(cfg["pe_path"], current=40.6) == [(0.0, 40.6), (5.0, 30.0)]
+    with pytest.raises(ValueError, match="current CAPE"):
+        parse_pe_path("now@0,30@5")

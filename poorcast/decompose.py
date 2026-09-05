@@ -16,24 +16,25 @@ import io
 import numpy as np
 import pandas as pd
 
-from .data import SHILLER_URL, _download, fetch_fred, load_panel, shiller_month_index
+from .data import fetch_fred, load_panel, shiller_month_index, shiller_workbook
+
+SHILLER_CAPE_COL = 12  # Shiller's own P/E10 ("CAPE") column in ie_data.xls
 
 
 def _shiller_pde(refresh: bool = False) -> pd.DataFrame:
-    blob = _download(SHILLER_URL, "shiller_ie_data.xls", refresh, ua="Mozilla/5.0")
+    blob = shiller_workbook(refresh)
     df = pd.read_excel(io.BytesIO(blob), sheet_name="Data", header=None, engine="xlrd")
     rows, idx = shiller_month_index(df[0])
     df = df[rows]
-    out = pd.DataFrame(
-        {
-            "P": pd.to_numeric(df[1], errors="coerce").to_numpy(),
-            "D": pd.to_numeric(df[2], errors="coerce").to_numpy(),
-            "E": pd.to_numeric(df[3], errors="coerce").to_numpy(),
-            "CPI": pd.to_numeric(df[4], errors="coerce").to_numpy(),
-        },
-        index=idx,
-    )
-    return out
+    cols = {
+        "P": pd.to_numeric(df[1], errors="coerce").to_numpy(),
+        "D": pd.to_numeric(df[2], errors="coerce").to_numpy(),
+        "E": pd.to_numeric(df[3], errors="coerce").to_numpy(),
+        "CPI": pd.to_numeric(df[4], errors="coerce").to_numpy(),
+    }
+    if df.shape[1] > SHILLER_CAPE_COL:
+        cols["CAPE"] = pd.to_numeric(df[SHILLER_CAPE_COL], errors="coerce").to_numpy()
+    return pd.DataFrame(cols, index=idx)
 
 
 def equity_return_decomposition(
@@ -102,11 +103,26 @@ def print_decomposition(d: dict) -> None:
 
 
 def shiller_pe_series(refresh: bool = False) -> pd.Series:
-    """CAPE-style monthly valuation state: real price over trailing 5-year
-    average real earnings (Shiller data). Used for valuation-conditioned
-    sampling."""
+    """Monthly valuation state for conditioned sampling and P/E paths: the
+    Shiller CAPE (real price over trailing 10-year average real earnings) -
+    his own published column when the workbook has it, else computed the
+    same way. (Earlier versions used a 5-year average, which runs well below
+    the quoted CAPE.)"""
     sh = _shiller_pde(refresh)
+    if "CAPE" in sh and sh["CAPE"].notna().sum() > 120:
+        return sh["CAPE"].dropna().rename("shiller_pe")
+    return cape_from_pde(sh)
+
+
+def cape_from_pde(sh: pd.DataFrame, years: int = 10) -> pd.Series:
+    """Real price over trailing `years`-year average real earnings."""
     scale = sh["CPI"].iloc[-1] / sh["CPI"]
     p_real = sh["P"] * scale
-    e_real = (sh["E"] * scale).rolling(60).mean()
+    e_real = (sh["E"] * scale).rolling(12 * years).mean()
     return (p_real / e_real).dropna().rename("shiller_pe")
+
+
+def current_cape(refresh: bool = False) -> tuple[float, "pd.Period"]:
+    """Latest CAPE and its month."""
+    s = shiller_pe_series(refresh)
+    return float(s.iloc[-1]), s.index[-1]
