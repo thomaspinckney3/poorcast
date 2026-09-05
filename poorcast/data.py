@@ -289,7 +289,6 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
             dev,
         ]
     ).sort_index()
-    intl = _apply_custom_override("intl_equities", intl)
 
     gs10 = fetch_fred("GS10", refresh)
     bonds = bond_returns_from_yields(gs10)
@@ -315,9 +314,12 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
         "income_cash": us["rf"],
     }
 
-    panel = pd.concat(
-        [us_eq, small, intl, bonds, munis, cash, inflation], axis=1
-    ).sort_index()
+    # data/custom/<asset>.csv overrides any built-in series where it has values.
+    series = [
+        _apply_custom_override(str(s.name), s)
+        for s in (us_eq, small, intl, bonds, munis, cash)
+    ]
+    panel = pd.concat(series + [inflation], axis=1).sort_index()
     for name, series in income.items():
         panel[name] = series.reindex(panel.index).ffill()
     panel.index.name = "month"
