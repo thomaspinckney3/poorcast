@@ -74,11 +74,18 @@ def _allocation(table, where: str) -> dict[str, float]:
     return alloc
 
 
+def _num_text(x, where: str) -> str:
+    """A number as exact CLI text. (':g' would round anything above six
+    significant digits - 1_234_567 became 1234570.)"""
+    v = _num(x, where)
+    return str(int(v)) if v == int(v) else repr(v)
+
+
 def _amount_text(x, where: str) -> str:
     """A dollar number or a '4%'-style string, as CLI text."""
     if isinstance(x, str):
         return x
-    return f"{_num(x, where):g}"
+    return _num_text(x, where)
 
 
 def _schedule_text(segs, where: str) -> str:
@@ -114,12 +121,12 @@ def _stream_text(entry, where: str, amount_key: str, require_at: bool) -> str:
     _reject_unknown(entry, {amount_key, "at"}, where)
     if amount_key not in entry:
         raise ConfigError(f"{where} needs `{amount_key}`")
-    amt = _num(entry[amount_key], f"{where}.{amount_key}")
+    amt = _num_text(entry[amount_key], f"{where}.{amount_key}")
     if "at" in entry:
-        return f"{amt:g}@{_int(entry['at'], f'{where}.at')}"
+        return f"{amt}@{_int(entry['at'], f'{where}.at')}"
     if require_at:
         raise ConfigError(f"{where} needs `at` (the age it happens)")
-    return f"{amt:g}"
+    return amt
 
 
 def _streams(value, where: str, amount_key: str = "annual", require_at: bool = False):
@@ -309,14 +316,14 @@ def load_config(path: str) -> dict:
                 _reject_unknown(d, {"rate", "from"}, "withdrawal.decline")
                 if "rate" not in d:
                     raise ConfigError("withdrawal.decline needs `rate` (%/yr)")
-                rate = _num(d["rate"], "withdrawal.decline.rate")
+                rate = _num_text(d["rate"], "withdrawal.decline.rate")
                 if "from" in d:
                     frm = _int(d["from"], "withdrawal.decline.from")
-                    out["spend_decline"] = f"{rate:g}@{frm}"
+                    out["spend_decline"] = f"{rate}@{frm}"
                 else:
-                    out["spend_decline"] = f"{rate:g}"
+                    out["spend_decline"] = rate
             else:
-                out["spend_decline"] = f"{_num(d, 'withdrawal.decline'):g}"
+                out["spend_decline"] = _num_text(d, "withdrawal.decline")
 
     if "income" in raw:
         out["income"] = _streams(raw["income"], "income")

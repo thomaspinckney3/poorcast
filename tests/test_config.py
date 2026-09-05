@@ -217,3 +217,28 @@ def test_optimize_section_parses(tmp_path):
                                     "ladder": [0, 4_000_000, 1_000_000]}
     with pytest.raises(ConfigError, match="min, max, step"):
         load_config(write(tmp_path, "[optimize]\nequity = [40, 80]\n"))
+
+
+def test_large_amounts_keep_every_digit(tmp_path):
+    from poorcast.cli import parse_at_age, parse_withdrawal
+
+    text = """
+    [withdrawal]
+    amount = 1_234_567
+    [[income]]
+    annual = 2_345_678.5
+    at = 67
+    [[expense]]
+    amount = 12_345_678
+    at = 70
+    [[account]]
+    type = "traditional"
+    balance = 1_000_000
+    allocation = { us_equities = 100 }
+    schedule = [{ amount = 1_111_111, from = 60, to = 65 }]
+    """
+    cfg = load_config(write(tmp_path, text))
+    assert parse_withdrawal(cfg["withdraw"], "fixed-real").amount == 1_234_567
+    assert parse_at_age(cfg["income"][0]) == (2_345_678.5, 67)
+    assert parse_at_age(cfg["expense"][0]) == (12_345_678, 70)
+    assert cfg["accounts"][0]["schedule"] == "1111111:60-65"
