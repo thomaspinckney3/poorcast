@@ -42,3 +42,27 @@ def test_optimizer_prefers_equity_when_it_dominates():
     assert equity >= 0.9
     assert board[0]["success"] >= board[-1]["success"]
     assert "success_sd" in board[0]
+
+
+def test_screen_candidates_share_one_sampling_window(monkeypatch):
+    # intl has no data before 1965: a mix without it would otherwise sample
+    # from 1960 while a mix with it samples from 1965, breaking common
+    # random numbers. Every candidate must resolve the same window.
+    import poorcast.optimize as opt
+
+    panel = synthetic_panel()
+    panel.loc[panel.index < pd.Period("1965-01", "M"), "intl_equities"] = np.nan
+    windows = set()
+    real = opt.simulate
+
+    def spy(p, cfg):
+        r = real(p, cfg)
+        windows.add((str(r.window.min()), str(r.window.max())))
+        return r
+
+    monkeypatch.setattr(opt, "simulate", spy)
+    base = SimConfig(allocation={"us_equities": 1.0}, initial=1e6, years=5,
+                     n_sims=50, seed=0, withdrawal=Withdrawal("fixed_real", rate=0.04))
+    optimize(panel, base, screen_sims=50, refine_sims=50, refine_seeds=(1,),
+             top_k=2, equity_levels=[0.5])
+    assert windows == {("1965-01", "1999-12")}

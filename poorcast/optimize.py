@@ -30,6 +30,10 @@ DEF_SPLITS = {  # muni_bonds, us_bonds_10yr, cash
     "tsy": (0, 1, 0),
     "mixed": (0.6, 0.2, 0.2),
 }
+GRID_ASSETS = [
+    "us_equities", "us_small_cap", "intl_equities",
+    "muni_bonds", "us_bonds_10yr", "cash",
+]
 
 
 def grid_allocation(equity: float, eq_split: str, def_split: str) -> dict[str, float]:
@@ -62,9 +66,16 @@ def optimize(
     withdrawal, taxes, rebalancing...).
     """
     levels = equity_levels or EQUITY_LEVELS
+    # Every candidate carries the whole grid universe (zero-weighted where
+    # unused) so the engine resolves the SAME sampling window for each -
+    # otherwise common random numbers break between mixes that include a
+    # short-history asset and mixes that don't.
+    universe = [a for a in GRID_ASSETS if a in panel.columns]
 
     def run(alloc, sims, seed):
-        cfg = replace(base, allocation=alloc, n_sims=sims, seed=seed)
+        full = {a: 0.0 for a in universe}
+        full.update(alloc)
+        cfg = replace(base, allocation=full, n_sims=sims, seed=seed)
         return simulate(panel, cfg)
 
     screened = []
