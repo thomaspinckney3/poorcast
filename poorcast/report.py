@@ -183,9 +183,13 @@ def flex_stats(result: SimResult) -> dict | None:
         return None
     allowed = (factor * target[None, :]).sum(axis=1) / budget
     below = factor < 1 - 1e-9
+    # Time shares count only months the household was still funding the
+    # rule: after depletion the multiplier is meaningless (nothing is paid).
+    dep = result.depleted_month
+    alive = np.arange(n)[None, :] <= np.where(dep < 0, n, dep)[:, None]
     return {
-        "months_below": float(below.mean()),
-        "months_at_floor": float((factor <= w.flex_floor + 1e-9).mean()),
+        "months_below": float(below[alive].mean()),
+        "months_at_floor": float((factor <= w.flex_floor + 1e-9)[alive].mean()),
         "budget_median": float(np.median(allowed)),
         "budget_mean": float(allowed.mean()),
         "budget_p5": float(np.percentile(allowed, 5)),

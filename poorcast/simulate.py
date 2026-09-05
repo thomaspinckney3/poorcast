@@ -1113,8 +1113,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 empty_in = (totals[i] <= 0) & (np.asarray(flow) > 0)
                 if empty_in.any():
                     # An all-ladder account has no liquid weights; fall back
-                    # to household weights, then equal weights.
+                    # to household weights, then equal weights. A gliding
+                    # account seeds at its current target.
                     wvec = acct.weights
+                    if multi and acct_target_w[i] is not None:
+                        wvec = acct_target_w[i][m]
                     if wvec.sum() <= 0:
                         wvec = weights if weights.sum() > 0 else np.full(
                             len(assets), 1.0 / len(assets)

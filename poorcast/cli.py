@@ -799,6 +799,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     return_adjustments = None
+    adjust_extra: dict = {}  # --adjust / [adjustments]: kept apart from the
+    # multiple-expansion haircut, which any P/E path scenario supersedes
     if args.multiple_expansion is not None and args.pe_path is None:
         from .decompose import equity_return_decomposition
 
@@ -838,6 +840,7 @@ def main(argv: list[str] | None = None) -> int:
         if idle and not args.optimize:
             print(f"note: adjustment asset(s) {idle} are in no allocation and "
                   "have no effect on this run")
+        adjust_extra = dict(extra)
         return_adjustments = dict(return_adjustments or {})
         for k, v in extra.items():
             return_adjustments[k] = return_adjustments.get(k, 0.0) + v
@@ -879,6 +882,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if opt_anchor == "stress" and stress_points is None:
         print("error: --optimize-anchor stress needs --optimize-stress")
+        return 2
+    if opt_tol > 0 and not (args.optimize and accounts is not None):
+        print("error: --optimize-tolerance applies to household --optimize runs")
         return 2
 
     # Account type and age-based features.
@@ -1037,7 +1043,9 @@ def main(argv: list[str] | None = None) -> int:
             """SimConfig fields that drive US equity valuation along a P/E
             path: conditioned block sampling with re-centering when
             --pe-conditioned is set, otherwise a per-month mean shift net of
-            the historical multiple expansion."""
+            the historical multiple expansion. A path supersedes any
+            --multiple-expansion haircut (the path IS the valuation
+            assumption), so it starts from the --adjust extras alone."""
             if not points:
                 return dict(return_adjustments=return_adjustments)
             if args.pe_conditioned:
@@ -1050,14 +1058,14 @@ def main(argv: list[str] | None = None) -> int:
                     [[0.0], np.cumsum(rates[:-1] / 12.0)]
                 ))
                 return dict(
-                    return_adjustments=return_adjustments,
+                    return_adjustments=dict(adjust_extra) or None,
                     state_series=shiller_pe_series(),
                     state_path=levels,
                     state_bandwidth=args.pe_bandwidth,
                     state_adjust_assets=("us_equities", "us_small_cap"),
                 )
             arr = pe_path_rates(points, years * 12) - hist_me
-            adj = dict(return_adjustments or {})
+            adj = dict(adjust_extra)
             for a in ("us_equities", "us_small_cap"):
                 adj[a] = adj.get(a, 0.0) + arr
             return dict(return_adjustments=adj)
