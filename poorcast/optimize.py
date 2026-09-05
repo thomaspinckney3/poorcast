@@ -220,6 +220,36 @@ def household_candidate(accounts, base_alloc, equity: float, ladder_total: float
     return tuple(out)
 
 
+def pick_within_tolerance(rows: list, tolerance: float, anchor: str = "base"):
+    """The tolerance rule: every candidate whose success rate (under `anchor`:
+    'base' -> row['success'], 'stress' -> row['stress_success']) is within
+    `tolerance` of the best achievable counts as tied; the tie is broken by
+    median real estate in the base case, then by its 5th percentile.
+
+    Success is treated as a band rather than a point because the binding
+    uncertainty is not Monte Carlo noise (tiny with paired paths) but that
+    every path recombines one history: differences of a point or two may
+    not survive a different draw of it. The tolerance is where the
+    household's risk preference lives, so it is an explicit parameter."""
+    key = "success" if anchor == "base" else "stress_success"
+    if anchor not in ("base", "stress"):
+        raise ValueError(f"anchor must be 'base' or 'stress', got {anchor!r}")
+    if not rows:
+        raise ValueError("no candidates to pick from")
+    if key == "stress_success" and any(key not in r for r in rows):
+        raise ValueError("a stress-anchored pick needs a stress scenario")
+    best = max(r[key] for r in rows)
+    tied = [r for r in rows if r[key] >= best - tolerance - 1e-12]
+    return max(tied, key=lambda r: (r["median"], r["p5"]))
+
+
+def tolerance_picks(rows: list, anchor: str = "base",
+                    tolerances=(0.01, 0.02, 0.03)) -> dict:
+    """{tolerance: winning row} for a ladder of tolerances - the frontier
+    the household actually chooses along."""
+    return {t: pick_within_tolerance(rows, t, anchor) for t in tolerances}
+
+
 def optimize_household(
     panel,
     base,
@@ -229,13 +259,31 @@ def optimize_household(
     refine_seeds: tuple[int, ...] = (42, 7, 123),
     top_k: int = 5,
     progress=None,
+    stress=None,
+    success_tolerance: float = 0.0,
+    anchor: str = "base",
+    return_screen: bool = False,
 ):
     """Search household (equity share x total ladder) candidates.
 
     Screens the grid with common random numbers, refines the leaders across
-    several seeds, and returns (best account tuple, leaderboard rows sorted
-    by mean success, then p5, then median real terminal wealth).
+    several seeds, and returns (best account tuple, leaderboard rows).
+
+    With success_tolerance == 0 the ranking is strict: mean success, then
+    p5, then median real terminal wealth. With a positive tolerance the
+    pick is the highest-estate candidate within that band of the best
+    success rate (see pick_within_tolerance); `stress` (a SimConfig that
+    differs from `base` in its scenario settings) adds a second world in
+    which every candidate is also scored, and anchor='stress' computes the
+    band on it. Estate is always judged in the base case. Refinement then
+    covers the band's members (highest estate first, up to top_k) rather
+    than the top success rates alone, so a high-estate candidate is not
+    dropped before the tolerance can favor it.
     """
+    if not 0 <= success_tolerance < 1:
+        raise ValueError(f"success_tolerance must be in [0, 1), got {success_tolerance}")
+    if anchor == "stress" and stress is None:
+        raise ValueError("anchor='stress' needs a stress scenario")
     accounts = base.accounts
     if equity_grid is None or ladder_grid is None:
         liq = eqd = 0.0
@@ -280,6 +328,13 @@ def optimize_household(
             "floor": float(r.ladder_annual or 0.0),
         }
 
+    def score(cand, sims, seed):
+        s = stats(simulate(panel, replace(base, accounts=cand, n_sims=sims, seed=seed)))
+        if stress is not None:
+            r = simulate(panel, replace(stress, accounts=cand, n_sims=sims, seed=seed))
+            s["stress_success"] = r.success_rate
+        return s
+
     rows = []
     seen = set()
     for L in ladder_grid:
@@ -291,34 +346,52 @@ def optimize_household(
                 continue  # a clipped duplicate of an already-screened candidate
             seen.add(key)
             cand = household_candidate(accounts, base.allocation, e, actual)
-            r = simulate(
-                panel,
-                replace(base, accounts=cand, n_sims=screen_sims, seed=screen_seed),
-            )
-            s = stats(r)
+            s = score(cand, screen_sims, screen_seed)
             row = {"label": f"ladder ${actual / 1e6:g}M · equity {e:.0%}{clipped}",
                    "accounts": cand, **s, "success_sd": 0.0}
             rows.append(row)
             if progress:
-                progress(f"  {row['label']}: success {s['success']:.1%}, "
+                extra = (f", stress {s['stress_success']:.1%}"
+                         if "stress_success" in s else "")
+                progress(f"  {row['label']}: success {s['success']:.1%}{extra}, "
                          f"p5 ${s['p5'] / 1e6:.2f}M, median ${s['median'] / 1e6:.1f}M")
     rows.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
 
+    if success_tolerance > 0:
+        # Refine the band's members, highest estate first, keeping the best
+        # success rate in the set so the band stays anchored after refining.
+        key = "success" if anchor == "base" else "stress_success"
+        best = max(r[key] for r in rows)
+        band = [r for r in rows if r[key] >= best - success_tolerance - 1e-12]
+        band.sort(key=lambda r: (-r["median"], -r["p5"]))
+        top = max(rows, key=lambda r: (r[key], r["median"]))
+        chosen = band[:top_k]
+        if top not in chosen:
+            chosen.append(top)
+    else:
+        chosen = rows[:top_k]
+
     refined = []
-    for row in rows[:top_k]:
-        succ, p5s, meds = [], [], []
-        floor = row["floor"]
-        for seed in refine_seeds:
-            r = simulate(panel, replace(base, accounts=row["accounts"], seed=seed))
-            s = stats(r)
-            succ.append(s["success"])
-            p5s.append(s["p5"])
-            meds.append(s["median"])
-        refined.append({
-            "label": row["label"], "accounts": row["accounts"], "floor": floor,
+    for row in chosen:
+        runs = [score(row["accounts"], base.n_sims, seed) for seed in refine_seeds]
+        succ = [r["success"] for r in runs]
+        out = {
+            "label": row["label"], "accounts": row["accounts"], "floor": row["floor"],
             "success": float(np.mean(succ)),
             "success_sd": float(np.std(succ, ddof=1)) if len(succ) > 1 else 0.0,
-            "p5": float(np.mean(p5s)), "median": float(np.mean(meds)),
-        })
+            "p5": float(np.mean([r["p5"] for r in runs])),
+            "median": float(np.mean([r["median"] for r in runs])),
+        }
+        if stress is not None:
+            ss = [r["stress_success"] for r in runs]
+            out["stress_success"] = float(np.mean(ss))
+            out["stress_success_sd"] = float(np.std(ss, ddof=1)) if len(ss) > 1 else 0.0
+        refined.append(out)
     refined.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
-    return refined[0]["accounts"], refined
+    if success_tolerance > 0:
+        best = pick_within_tolerance(refined, success_tolerance, anchor)
+    else:
+        best = refined[0]
+    if return_screen:
+        return best["accounts"], refined, rows
+    return best["accounts"], refined

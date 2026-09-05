@@ -219,6 +219,34 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "maximizes success probability under all the other settings (withdrawal, "
         "taxes, horizon...), then run it. Takes a few minutes per horizon",
     )
+    r.add_argument(
+        "--optimize-tolerance",
+        type=float,
+        default=0.0,
+        metavar="PTS",
+        help="household --optimize: treat candidates within PTS points of the "
+        "best success rate as tied and pick the highest median real estate "
+        "among them (default 0 = strict success ranking). The tolerance is "
+        "the household's risk preference: with one shared history, success "
+        "differences of a point or two may not be real",
+    )
+    r.add_argument(
+        "--optimize-anchor",
+        choices=["base", "stress"],
+        default="base",
+        help="which world the tolerance band is measured in: the run's own "
+        "assumptions (base) or the --optimize-stress scenario (stress). Estate "
+        "is always judged in the base world",
+    )
+    r.add_argument(
+        "--optimize-stress",
+        default=None,
+        metavar="PE@YEAR,...",
+        help="a second P/E path (same syntax as --pe-path, conditioned when "
+        "--pe-conditioned is set) under which every household candidate is "
+        "also scored, reported alongside the base results and available as "
+        "the tolerance anchor",
+    )
     r.add_argument("--initial", type=float, default=1_000_000, help="starting balance (default 1,000,000)")
     r.add_argument(
         "--glide-to",
@@ -814,7 +842,12 @@ def main(argv: list[str] | None = None) -> int:
         for k, v in extra.items():
             return_adjustments[k] = return_adjustments.get(k, 0.0) + v
     pe_points = None
+    stress_points = None
     hist_me = 0.0
+    if args.pe_path is not None or getattr(args, "optimize_stress", None):
+        from .decompose import equity_return_decomposition
+
+        hist_me = equity_return_decomposition()["multiple_expansion"]
     if args.pe_path is not None:
         if args.multiple_expansion is not None:
             print("note: --pe-path supersedes the multiple-expansion setting")
@@ -823,14 +856,30 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as e:
             print(f"error: {e}")
             return 2
-        from .decompose import equity_return_decomposition
-
-        hist_me = equity_return_decomposition()["multiple_expansion"]
         pes = " -> ".join(f"{p:g} at year {y:g}" for y, p in pe_points)
         print(
             f"P/E path: {pes} (vs historical multiple expansion "
             f"{hist_me * 100:+.2f}%/yr)"
         )
+    if getattr(args, "optimize_stress", None):
+        if not (args.optimize and accounts is not None):
+            print("error: --optimize-stress applies to household --optimize runs")
+            return 2
+        try:
+            stress_points = parse_pe_path(args.optimize_stress)
+        except ValueError as e:
+            print(f"error: {e}")
+            return 2
+        pes = " -> ".join(f"{p:g} at year {y:g}" for y, p in stress_points)
+        print(f"Optimizer stress scenario: P/E {pes}")
+    opt_tol = getattr(args, "optimize_tolerance", 0.0) or 0.0
+    opt_anchor = getattr(args, "optimize_anchor", "base") or "base"
+    if not 0 <= opt_tol < 100:
+        print("error: --optimize-tolerance is in success-rate points (0-100)")
+        return 2
+    if opt_anchor == "stress" and stress_points is None:
+        print("error: --optimize-anchor stress needs --optimize-stress")
+        return 2
 
     # Account type and age-based features.
     if accounts is not None:
@@ -984,28 +1033,38 @@ def main(argv: list[str] | None = None) -> int:
             run_withdrawal = replace(
                 withdrawal, rate=0.0, amount=max(target - ladder.annual, 0.0)
             )
-        run_adjustments = return_adjustments
-        state_kw = {}
-        if pe_points and args.pe_conditioned:
-            import numpy as np
+        def scenario_fields(points) -> dict:
+            """SimConfig fields that drive US equity valuation along a P/E
+            path: conditioned block sampling with re-centering when
+            --pe-conditioned is set, otherwise a per-month mean shift net of
+            the historical multiple expansion."""
+            if not points:
+                return dict(return_adjustments=return_adjustments)
+            if args.pe_conditioned:
+                import numpy as np
 
-            from .decompose import shiller_pe_series
+                from .decompose import shiller_pe_series
 
-            rates = pe_path_rates(pe_points, years * 12)
-            levels = pe_points[0][1] * np.exp(np.concatenate(
-                [[0.0], np.cumsum(rates[:-1] / 12.0)]
-            ))
-            state_kw = dict(
-                state_series=shiller_pe_series(),
-                state_path=levels,
-                state_bandwidth=args.pe_bandwidth,
-                state_adjust_assets=("us_equities", "us_small_cap"),
-            )
-        elif pe_points:
-            arr = pe_path_rates(pe_points, years * 12) - hist_me
-            run_adjustments = dict(return_adjustments or {})
+                rates = pe_path_rates(points, years * 12)
+                levels = points[0][1] * np.exp(np.concatenate(
+                    [[0.0], np.cumsum(rates[:-1] / 12.0)]
+                ))
+                return dict(
+                    return_adjustments=return_adjustments,
+                    state_series=shiller_pe_series(),
+                    state_path=levels,
+                    state_bandwidth=args.pe_bandwidth,
+                    state_adjust_assets=("us_equities", "us_small_cap"),
+                )
+            arr = pe_path_rates(points, years * 12) - hist_me
+            adj = dict(return_adjustments or {})
             for a in ("us_equities", "us_small_cap"):
-                run_adjustments[a] = run_adjustments.get(a, 0.0) + arr
+                adj[a] = adj.get(a, 0.0) + arr
+            return dict(return_adjustments=adj)
+
+        scenario = scenario_fields(pe_points)
+        run_adjustments = scenario.pop("return_adjustments")
+        state_kw = scenario
         cfg = SimConfig(
             allocation=(
                 args.allocation
@@ -1078,21 +1137,50 @@ def main(argv: list[str] | None = None) -> int:
                     L_vals.append(x)
                     x += st
             n_cand = len(e_vals or [1]) * len(L_vals or [1])
+            stress_cfg = None
+            if stress_points is not None:
+                sf = scenario_fields(stress_points)
+                stress_cfg = replace(
+                    cfg, return_adjustments=sf.pop("return_adjustments"),
+                    state_series=sf.get("state_series"), state_path=sf.get("state_path"),
+                    state_bandwidth=sf.get("state_bandwidth", cfg.state_bandwidth),
+                    state_adjust_assets=sf.get("state_adjust_assets"),
+                )
             print(f"\nSearching household allocations for the {years}-year "
                   f"horizon ({n_cand} candidates, then refinement)...")
-            best, board = optimize_household(
-                panel, cfg, e_vals, L_vals, progress=lambda s: print(s, flush=True)
+            best, board, screened = optimize_household(
+                panel, cfg, e_vals, L_vals, progress=lambda s: print(s, flush=True),
+                stress=stress_cfg, success_tolerance=opt_tol / 100.0,
+                anchor=opt_anchor, return_screen=True,
             )
-            print("\nTop candidates (success mean ± sd across seeds · "
-                  "real terminal p5/median · floor):")
+            has_stress = stress_cfg is not None
+            print("\nRefined candidates (success mean ± sd across seeds"
+                  + (" · stress success" if has_stress else "")
+                  + " · real terminal p5/median · floor):")
             for row in board:
-                print(
-                    "  %-28s %6.2f%% ± %4.2f · $%.2fM / $%.1fM · $%s/yr"
-                    % (row["label"], row["success"] * 100, row["success_sd"] * 100,
-                       row["p5"] / 1e6, row["median"] / 1e6,
-                       f"{row['floor']:,.0f}")
-                )
-            print(f"Selected: {board[0]['label']}")
+                line = "  %-28s %6.2f%% ± %4.2f" % (
+                    row["label"], row["success"] * 100, row["success_sd"] * 100)
+                if has_stress:
+                    line += " · stress %6.2f%%" % (row["stress_success"] * 100)
+                line += " · $%.2fM / $%.1fM · $%s/yr" % (
+                    row["p5"] / 1e6, row["median"] / 1e6, f"{row['floor']:,.0f}")
+                print(line)
+            if opt_tol > 0:
+                from .optimize import tolerance_picks
+
+                print(f"\nPick by success tolerance ({opt_anchor}-anchored band, "
+                      "highest median estate within the band; from the screen):")
+                for t, row in tolerance_picks(screened, opt_anchor).items():
+                    line = f"  {t * 100:.0f} pt{'s' if t > 0.01 else ' '}: {row['label']:<28} " \
+                           f"success {row['success']:.1%}"
+                    if has_stress:
+                        line += f", stress {row['stress_success']:.1%}"
+                    line += f", estate ${row['median'] / 1e6:.1f}M, floor ${row['floor']:,.0f}/yr"
+                    print(line)
+                chosen = next(r["label"] for r in board if r["accounts"] == best)
+                print(f"Selected at {opt_tol:g} pt{'s' if opt_tol != 1 else ''}: {chosen}")
+            else:
+                print(f"Selected: {board[0]['label']}")
             cfg = replace(cfg, accounts=best)
         elif args.optimize:
             from dataclasses import replace

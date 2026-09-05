@@ -138,6 +138,23 @@ def _streams(value, where: str, amount_key: str = "annual", require_at: bool = F
     ]
 
 
+def _pe_path_text(pts, where: str) -> str:
+    """[{year, pe}, ...] -> the CLI 'PE@YEAR,...' string."""
+    if not isinstance(pts, list) or len(pts) < 2:
+        raise ConfigError(f"{where} must be an array of at least two {{year, pe}} points")
+    parts = []
+    for i, p in enumerate(pts):
+        w = f"{where}[{i}]"
+        if not isinstance(p, dict):
+            raise ConfigError(f"{w} must be a table like {{year = 10, pe = 20}}")
+        _reject_unknown(p, {"year", "pe"}, w)
+        for key in ("year", "pe"):
+            if key not in p:
+                raise ConfigError(f"{w} needs `{key}`")
+        parts.append(f"{_num(p['pe'], w + '.pe')!r}@{_num(p['year'], w + '.year')!r}")
+    return ",".join(parts)
+
+
 TOP_KEYS = {
     "age", "initial", "horizons", "contribute", "optimize", "fees",
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
@@ -145,7 +162,8 @@ TOP_KEYS = {
     "account", "withdraw_order", "adjustments", "pe_path",
     "pe_conditioned", "pe_bandwidth",
 }
-OPTIMIZE_KEYS = {"equity", "ladder"}
+OPTIMIZE_KEYS = {"equity", "ladder", "tolerance", "anchor", "stress"}
+OPTIMIZE_GRID_KEYS = ("equity", "ladder")
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 
 
@@ -175,7 +193,16 @@ def load_config(path: str) -> dict:
             # Household search space: [optimize] equity/ladder = [min, max, step]
             _reject_unknown(o, OPTIMIZE_KEYS, "[optimize]")
             grid = {}
-            for key in OPTIMIZE_KEYS:
+            if "tolerance" in o:
+                tol = _num(o["tolerance"], "optimize.tolerance")
+                if not 0 <= tol < 100:
+                    raise ConfigError("[optimize] tolerance is in success-rate points (0-100)")
+                out["optimize_tolerance"] = tol
+            if "anchor" in o:
+                out["optimize_anchor"] = _str(o["anchor"], "optimize.anchor", ("base", "stress"))
+            if "stress" in o:
+                out["optimize_stress"] = _pe_path_text(o["stress"], "optimize.stress")
+            for key in OPTIMIZE_GRID_KEYS:
                 if key in o:
                     v = o[key]
                     if not (isinstance(v, list) and len(v) == 3):
@@ -207,24 +234,7 @@ def load_config(path: str) -> dict:
     # Assumed P/E valuation path for US equities, e.g.
     # pe_path = [{year = 0, pe = 30}, {year = 10, pe = 20}, {year = 40, pe = 30}]
     if "pe_path" in raw:
-        pts = raw["pe_path"]
-        if not isinstance(pts, list) or len(pts) < 2:
-            raise ConfigError(
-                "pe_path must be an array of at least two {year, pe} points"
-            )
-        parts = []
-        for i, p in enumerate(pts):
-            where = f"pe_path[{i}]"
-            if not isinstance(p, dict):
-                raise ConfigError(f"{where} must be a table like {{year = 10, pe = 20}}")
-            _reject_unknown(p, {"year", "pe"}, where)
-            for key in ("year", "pe"):
-                if key not in p:
-                    raise ConfigError(f"{where} needs `{key}`")
-            parts.append(
-                f"{_num(p['pe'], where + '.pe')!r}@{_num(p['year'], where + '.year')!r}"
-            )
-        out["pe_path"] = ",".join(parts)
+        out["pe_path"] = _pe_path_text(raw["pe_path"], "pe_path")
 
     if "pe_conditioned" in raw:
         out["pe_conditioned"] = _bool(raw["pe_conditioned"], "pe_conditioned")

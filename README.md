@@ -449,6 +449,33 @@ risk-preference dial, so the tradeoff is the answer. Composes with
 scenario assumptions: `poorcast run --config plan.toml --optimize
 --pe-path "30@0,20@10,30@40"` optimizes under a valuation cycle.
 
+**Choosing by tolerance, not by decimals.** By default the search ranks
+strictly by success rate, and at today's real yields that ranking climbs
+toward a full TIPS ladder: once guaranteed income covers the (flexed) budget
+nothing can fail, and a 0/1 loss gives no credit for estate. The decimals
+it is climbing are not real: with paired paths the Monte Carlo noise is
+tiny, but every path recombines one history, so success differences of a
+point or two may not survive a different draw of it. `--optimize-tolerance
+2` (or `tolerance = 2` under `[optimize]`, in success-rate points) treats
+every candidate within that band of the best success rate as tied and picks
+the highest median real estate among them; the report also prints the pick
+at 1, 2 and 3 points so the frontier, not one number, is what you see. The
+tolerance is the household's risk preference made explicit. `--optimize-
+stress "30@0,10@10,25@40"` (or `stress = [{year, pe}, ...]`) scores every
+candidate under a second P/E path as well, and `--optimize-anchor stress`
+measures the band there — a cautious reading that tends to answer with a
+larger ladder rather than less equity. Estate is always judged in the base
+world.
+
+```toml
+[optimize]
+equity = [40, 80, 20]
+ladder = [0, 12_000_000, 1_000_000]
+tolerance = 2                 # success-rate points treated as a tie
+anchor = "stress"             # measure the band under the stress path
+stress = [{year = 0, pe = 30}, {year = 10, pe = 10}, {year = 40, pe = 25}]
+```
+
 ## Asset classes
 
 | name | coverage | source |

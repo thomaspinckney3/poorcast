@@ -168,3 +168,88 @@ def test_rescale_equity_keeps_bucket_proportions():
     assert out == pytest.approx({"us_equities": 0.5, "muni_bonds": 0.5})
     with pytest.raises(ValueError, match="no equity"):
         rescale_equity({"muni_bonds": 1.0}, 0.5)
+
+
+# --- tolerance-based selection -----------------------------------------------
+
+
+def _rows():
+    # success falls as the ladder shrinks, estate rises: the classic frontier
+    return [
+        {"label": "L8", "success": 0.999, "stress_success": 0.989, "median": 25.9, "p5": 5.0},
+        {"label": "L6", "success": 0.990, "stress_success": 0.949, "median": 30.4, "p5": 4.0},
+        {"label": "L5", "success": 0.983, "stress_success": 0.925, "median": 32.7, "p5": 3.5},
+        {"label": "L4", "success": 0.975, "stress_success": 0.902, "median": 35.0, "p5": 3.0},
+    ]
+
+
+def test_pick_within_tolerance_slides_with_the_band():
+    from poorcast.optimize import pick_within_tolerance, tolerance_picks
+
+    rows = _rows()
+    assert pick_within_tolerance(rows, 0.0)["label"] == "L8"      # strict: best success
+    assert pick_within_tolerance(rows, 0.01)["label"] == "L6"     # within 1 pt: max estate
+    assert pick_within_tolerance(rows, 0.02)["label"] == "L5"
+    assert pick_within_tolerance(rows, 0.03)["label"] == "L4"
+    # anchored to stress the band is tighter: only L8 is within 1 pt of 98.9%
+    assert pick_within_tolerance(rows, 0.01, anchor="stress")["label"] == "L8"
+    assert pick_within_tolerance(rows, 0.05, anchor="stress")["label"] == "L6"
+    picks = tolerance_picks(rows, "base")
+    assert [r["label"] for r in picks.values()] == ["L6", "L5", "L4"]
+    with pytest.raises(ValueError, match="anchor"):
+        pick_within_tolerance(rows, 0.01, anchor="worst")
+    with pytest.raises(ValueError, match="stress scenario"):
+        pick_within_tolerance([{"success": 1.0, "median": 1.0, "p5": 0.0}], 0.01, anchor="stress")
+
+
+def _frontier_panel():
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    rng = np.random.default_rng(3)
+    return pd.DataFrame({
+        "us_equities": rng.normal(0.008, 0.045, 480),
+        "muni_bonds": rng.normal(0.002, 0.01, 480),
+        "cash": np.full(480, 0.002),
+        "inflation": np.full(480, 0.002),
+    }, index=idx)
+
+
+def test_optimize_household_tolerance_prefers_estate_within_band():
+    panel = _frontier_panel()
+    base = SimConfig(
+        accounts=(Account("taxable", 1_000_000.0,
+                          allocation={"us_equities": 0.6, "muni_bonds": 0.35, "cash": 0.05}),),
+        years=10, n_sims=300, seed=1, ladder_yield=0.02,
+        withdrawal=Withdrawal("fixed_real", rate=0.05),
+    )
+    kw = dict(equity_grid=[0.4, 0.8], ladder_grid=[0.0, 500_000.0],
+              screen_sims=300, refine_seeds=(1, 2), top_k=4)
+    strict_best, strict_board = optimize_household(panel, base, **kw)
+    loose_best, loose_board, screened = optimize_household(
+        panel, base, success_tolerance=0.5, return_screen=True, **kw)
+    assert len(screened) == 4
+    strict_row = max(strict_board, key=lambda r: (r["success"], r["p5"], r["median"]))
+    loose_row = next(r for r in loose_board if r["accounts"] == loose_best)
+    # a 50-point band ties everything, so the loose pick is the max-estate
+    # candidate, which never beats the strict pick on success
+    assert loose_row["median"] == max(r["median"] for r in loose_board)
+    assert loose_row["success"] <= strict_row["success"] + 1e-9
+    with pytest.raises(ValueError, match="stress scenario"):
+        optimize_household(panel, base, success_tolerance=0.01, anchor="stress", **kw)
+
+
+def test_optimize_household_scores_a_stress_world():
+    from dataclasses import replace
+
+    panel = _frontier_panel()
+    base = SimConfig(
+        accounts=(Account("taxable", 1_000_000.0,
+                          allocation={"us_equities": 0.6, "muni_bonds": 0.35, "cash": 0.05}),),
+        years=10, n_sims=200, seed=1, ladder_yield=0.02,
+        withdrawal=Withdrawal("fixed_real", rate=0.05),
+    )
+    stress = replace(base, return_adjustments={"us_equities": -0.06})
+    best, board = optimize_household(
+        panel, base, equity_grid=[0.5], ladder_grid=[0.0, 500_000.0],
+        screen_sims=200, refine_seeds=(1,), top_k=2, stress=stress,
+        success_tolerance=0.02, anchor="stress")
+    assert all("stress_success" in r and r["stress_success"] <= r["success"] + 1e-9 for r in board)

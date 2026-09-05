@@ -263,3 +263,19 @@ def test_account_glide_to_and_household_equity_glide_parse(tmp_path):
         load_config(write(tmp_path, "[glide]\nequity = 80\nto = { us_equities = 100 }\n"))
     with pytest.raises(ConfigError, match="percent"):
         load_config(write(tmp_path, "[glide]\nequity = 180\n"))
+
+
+def test_optimize_tolerance_anchor_and_stress_parse(tmp_path):
+    text = """
+    [optimize]
+    equity = [40, 80, 20]
+    tolerance = 2
+    anchor = "stress"
+    stress = [{year = 0, pe = 30}, {year = 10, pe = 10}, {year = 40, pe = 25}]
+    """
+    cfg = load_config(write(tmp_path, text))
+    assert cfg["optimize_tolerance"] == 2 and cfg["optimize_anchor"] == "stress"
+    assert cfg["optimize_stress"] == "30.0@0.0,10.0@10.0,25.0@40.0"
+    assert cfg["optimize_grid"] == {"equity": [40.0, 80.0, 20.0]}
+    with pytest.raises(ConfigError, match="points"):
+        load_config(write(tmp_path, "[optimize]\nequity = [40, 80, 20]\ntolerance = 150\n"))
