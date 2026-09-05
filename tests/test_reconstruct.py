@@ -51,3 +51,22 @@ def test_eafe_anchor_leaves_uncovered_years_alone():
     series = pd.Series(np.full(12, 0.02), index=idx)
     out = _anchor_to_eafe(series)
     assert np.allclose(out, series)
+
+
+def test_parity_steps_are_devaluations_not_redenominations():
+    # A currency redenomination (old franc -> new franc, 100:1) must be
+    # carried in one unit; a genuine parity step is never more than ~30%.
+    from poorcast.reconstruct import PARITIES
+
+    for key, steps in PARITIES.items():
+        rates = [r for _, r in steps]
+        for a, b in zip(rates, rates[1:]):
+            assert abs(b / a - 1) < 0.3, f"{key}: {a} -> {b}"
+    assert PARITIES["france"][0][0] == "1955-01"
+
+
+def test_reconstruction_starts_in_1955_by_default():
+    import inspect
+    from poorcast.reconstruct import reconstruct_intl
+
+    assert inspect.signature(reconstruct_intl).parameters["first_year"].default == 1955

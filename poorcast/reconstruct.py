@@ -1,4 +1,4 @@
-"""Reconstruct pre-1984 international developed-market equity returns (USD, monthly).
+"""Reconstruct pre-1986 international developed-market equity returns (USD, monthly).
 
 Method (per country, then GDP-weighted composite):
   1. Monthly local-currency price returns from the OECD MEI share-price index
@@ -15,6 +15,10 @@ Method (per country, then GDP-weighted composite):
 
 Countries: Japan, UK, Germany, France, Switzerland, Netherlands, Italy,
 Australia - the large majority of developed ex-US market cap in this era.
+Each country joins the composite when its monthly index begins (Japan 1949
+via the Nikkei; Switzerland and France 1955; Italy and Netherlands 1957; UK
+December 1957; Australia 1958; Germany 1960), so the 1955-59 composite is a
+subset of the eight, GDP-weighted over whoever has data that month.
 
 Caveats, stated once and honestly: GDP weights are not market-cap weights
 (the UK equity market was larger, relative to GDP, than most); MEI indices and
@@ -48,13 +52,16 @@ COUNTRIES = {
 
 # Official USD-per-local-currency parities before the 1971 float, as a list of
 # (first month in force, rate). Sources: IMF par values; steps are the known
-# devaluations/revaluations (GBP Nov 1967; DEM Mar 1961, Oct 1969; FRF Aug 1969;
-# NLG Mar 1961). Australia held its USD rate through the 1967 sterling move.
+# devaluations/revaluations (GBP Nov 1967; DEM Mar 1961, Oct 1969; FRF Aug 1957,
+# Dec 1958, Aug 1969; NLG Mar 1961). Australia held its USD rate through the
+# 1967 sterling move. The franc is carried in NEW francs throughout (100 old =
+# 1 new from January 1960) so the redenomination is not a 100x "return".
 PARITIES = {
     "japan": [("1955-01", 1 / 360.0)],
     "uk": [("1955-01", 2.80), ("1967-11", 2.40)],
     "germany": [("1955-01", 1 / 4.20), ("1961-03", 1 / 4.00), ("1969-10", 1 / 3.66)],
-    "france": [("1960-01", 1 / 4.93706), ("1969-08", 1 / 5.55419)],
+    "france": [("1955-01", 1 / 3.50), ("1957-08", 1 / 4.20), ("1959-01", 1 / 4.93706),
+               ("1969-08", 1 / 5.55419)],
     "switzerland": [("1955-01", 1 / 4.37282)],
     "netherlands": [("1955-01", 1 / 3.80), ("1961-03", 1 / 3.62)],
     "italy": [("1955-01", 1 / 625.0)],
@@ -150,7 +157,7 @@ def _anchored_local_returns(
 
 
 def reconstruct_intl(
-    last_year: int = 1983, first_year: int = 1960, refresh: bool = False
+    last_year: int = 1983, first_year: int = 1955, refresh: bool = False
 ) -> pd.Series:
     """GDP-weighted developed ex-US USD monthly total returns through last_year."""
     jst = _load_jst(refresh)

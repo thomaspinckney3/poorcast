@@ -455,16 +455,17 @@ scenario assumptions: `poorcast run --config plan.toml --optimize
 |---|---|---|
 | `us_equities` | 1926+ | CRSP value-weighted total market (Ken French library) |
 | `us_small_cap` | 1926+ | bottom 30% by market cap, value-weighted (Ken French) |
-| `intl_equities` | 1960+ | reconstructed 8-country composite (1960–85), AQR Global ex USA (1986–90), Ken French Developed ex US (1990+) |
+| `intl_equities` | 1955+ | reconstructed composite of up to 8 countries (1955–85), AQR Global ex USA (1986–90), Ken French Developed ex US (1990+) |
 | `us_bonds_10yr` | 1953+ | 10-yr Treasury total return derived from FRED GS10 yields |
 | `muni_bonds` | 1953+ | Bond Buyer GO-20 yields priced at their 20y maturity through 2007, observed MUB ETF total returns after |
 | `cash` | 1926+ | 1-month T-bill (Ken French) |
 
 US CPI (FRED `CPIAUCSL`) is carried alongside and sampled jointly, driving
 inflation-adjusted withdrawals and real-dollar reporting. All returns are
-monthly, USD, total return. Default sampling starts in 1960 (when everything
-overlaps); the sampler automatically narrows the window to the months where
-every asset in *your* allocation has data.
+monthly, USD, total return. Default sampling starts in 1960; every asset now
+has data from 1955, so `--start 1955-01` (or `start = "1955-01"` under
+`[simulation]`) adds the late 1950s. The sampler automatically narrows the
+window to the months where every asset in *your* allocation has data.
 
 **Custom data:** drop `data/custom/<asset>.csv` (`month,return` rows like
 `1970-01,0.023`) and rerun `poorcast fetch` — it overrides the built-in series
@@ -473,14 +474,18 @@ wherever it has values.
 ### How pre-1986 international is built
 
 MSCI EAFE begins Dec 1969 and MSCI does not allow free download of pre-1997
-history, so the 1960–1985 segment is reconstructed from primary national data
+history, so the 1955–1985 segment is reconstructed from primary national data
 (see `poorcast/reconstruct.py`): monthly local-currency price indices for
 Japan, UK, Germany, France, Switzerland, Netherlands, Italy and Australia
 (OECD MEI via FRED; month-end Nikkei closes for Japan), dividend accrual and
 annual local total-return anchors from the Jordà-Schularick-Taylor
 macrohistory database, USD conversion via official Bretton Woods parities
-(with the documented devaluation steps) before 1971 and FRED monthly rates
-after, GDP-weighted. Calendar years 1970–1985 are additionally anchored to
+(with the documented devaluation steps, the franc carried in new francs
+throughout) before 1971 and FRED monthly rates after, GDP-weighted. Each
+country joins when its monthly index begins — Japan, France and Switzerland
+from 1955, Italy and the Netherlands from 1957, the UK from December 1957,
+Australia from 1958, Germany from 1960 — so 1955–59 is a GDP-weighted
+composite of the countries with data, three of the eight in 1955–56. Calendar years 1970–1985 are additionally anchored to
 published MSCI EAFE annual USD total returns, so from 1970 on only the
 *within-year monthly shape* is reconstructed; annual totals are observed data.
 
@@ -488,8 +493,10 @@ Run `poorcast validate-intl` for the out-of-sample check against observed
 1986–1995 series (monthly correlation 0.81–0.88, annualized gap +1.5 to
 +2.9%/yr — the reconstruction runs slightly hot; the smoothing comes from OECD
 indices being monthly averages). Known caveats: GDP weights are not market-cap
-weights, and the eight countries are most but not all of EAFE. If you have
-licensed EAFE data, use the custom-data override above.
+weights, the eight countries are most but not all of EAFE, and before 1960
+the composite is missing Germany (and, before 1958, the UK) — the 1955–59
+segment has no observed EAFE anchor. If you have licensed EAFE data, use the
+custom-data override above.
 
 ## How the simulation works
 

@@ -40,7 +40,7 @@ ASSET_DESCRIPTIONS = {
     "us_equities": "US total stock market (CRSP value-weighted, via Ken French)",
     "us_small_cap": "US small caps (bottom 30% by market cap, value-weighted, via Ken French)",
     "intl_equities": "International developed ex-US (reconstructed 8-country composite "
-    "1960-85 anchored to observed EAFE/JST annuals; AQR Global ex USA 1986-90; "
+    "1955-85 anchored to observed EAFE/JST annuals; AQR Global ex USA 1986-90; "
     "Ken French Developed ex US 1990+)",
     "us_bonds_10yr": "10-year US Treasuries (total return derived from FRED GS10 yields)",
     "muni_bonds": "Municipal bonds (returns derived from Bond Buyer GO-20 yields "
