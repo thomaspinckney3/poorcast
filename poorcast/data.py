@@ -42,10 +42,11 @@ ASSET_DESCRIPTIONS = {
     "intl_equities": "International developed ex-US (reconstructed 8-country composite "
     "1955-85 anchored to observed EAFE/JST annuals; AQR Global ex USA 1986-90; "
     "Ken French Developed ex US 1990+)",
-    "us_bonds_10yr": "10-year US Treasuries (total return derived from FRED GS10 yields)",
+    "us_bonds_10yr": "10-year US Treasuries (total return derived from FRED GS10 yields; "
+    "the Fed long-term composite LTGOVTBD before 1953)",
     "muni_bonds": "Municipal bonds (returns derived from Bond Buyer GO-20 yields "
-    "1953-2007, observed MUB ETF total returns 2007+; income exempt from federal "
-    "and state tax)",
+    "1953-2007, NBER high-grade muni yields 1937-52, a Treasury-ratio proxy before; "
+    "observed MUB ETF total returns 2007+; income exempt from federal and state tax)",
     "cash": "1-month US T-bills (via Ken French)",
 }
 
@@ -262,10 +263,52 @@ def fetch_yahoo_monthly(symbol: str, refresh: bool = False) -> pd.DataFrame:
     return out[out.index < current]
 
 
+def splice_yields(primary: pd.Series, secondary: pd.Series, offset: float) -> pd.Series:
+    """`primary` where it has data, else `secondary + offset` (a level
+    adjustment fitted on the overlap by the caller). Percent yields."""
+    out = primary.reindex(primary.index.union(secondary.index))
+    fill = (secondary + offset).reindex(out.index)
+    return out.where(out.notna(), fill).sort_index()
+
+
+def treasury_yield_history(refresh: bool = False) -> pd.Series:
+    """10-year Treasury yield, percent: FRED GS10 (1953-04+) extended back to
+    1925 with the Fed's long-term government composite (LTGOVTBD), which sits
+    ~0.10 pt above GS10 on the 1953-55 overlap. Yields were pegged from
+    1942 to the March 1951 Accord, so that stretch is artificially calm."""
+    gs10 = fetch_fred("GS10", refresh)
+    lt = fetch_fred("LTGOVTBD", refresh)
+    both = pd.concat([lt.rename("lt"), gs10.rename("gs")], axis=1).dropna()
+    both = both[: pd.Period("1955-12", freq="M")]
+    offset = float((both["gs"] - both["lt"]).mean()) if len(both) else 0.0
+    return splice_yields(gs10, lt, offset).rename("GS10")
+
+
+def muni_yield_history(refresh: bool = False) -> pd.Series:
+    """Bond Buyer 20-bond yield, percent (FRED MSLB20, 1953-01..2016-09),
+    extended back to 1925: the NBER Macrohistory high-grade municipal series
+    (M13043USM156NNBR, 1937-1966; ~0.22 pt below Bond Buyer 20 on the
+    1953-66 overlap, level-adjusted) for 1937-52, and before 1937 the long
+    Treasury yield scaled by the 1937-52 average muni/Treasury ratio - a
+    proxy, since no free monthly muni series reaches the 1920s."""
+    bb = fetch_fred("MSLB20", refresh)
+    nber = fetch_fred("M13043USM156NNBR", refresh)
+    both = pd.concat([nber.rename("nb"), bb.rename("bb")], axis=1).dropna()
+    offset = float((both["bb"] - both["nb"]).mean()) if len(both) else 0.0
+    muni = splice_yields(bb, nber, offset)
+    tsy = treasury_yield_history(refresh)
+    o = pd.concat([muni.rename("m"), tsy.rename("t")], axis=1).dropna()
+    o = o[pd.Period("1937-01", freq="M"): pd.Period("1952-12", freq="M")]
+    ratio = float((o["m"] / o["t"]).mean()) if len(o) else 0.9
+    pre = (tsy[: pd.Period("1936-12", freq="M")] * ratio)
+    return splice_yields(muni, pre, 0.0).rename("MSLB20")
+
+
 def fetch_muni_returns(refresh: bool = False) -> tuple[pd.Series, pd.Series]:
     """Monthly muni total returns and income yields: derived from Bond Buyer
-    GO-20 yields (FRED MSLB20, 1953-2007), observed MUB ETF from 2007 on."""
-    yields = fetch_fred("MSLB20", refresh)  # percent, monthly, ends 2016-09
+    GO-20 yields (extended to 1925, see muni_yield_history) through 2007,
+    observed MUB ETF from 2007 on."""
+    yields = muni_yield_history(refresh)  # percent, monthly
     # Priced at the index's actual 20-year maturity: earning 20-year yield
     # carry on a shorter-priced bond would systematically flatter the series.
     # The cost of consistency is a duration break at the 2007 MUB splice
@@ -326,12 +369,19 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
         ]
     ).sort_index()
 
-    gs10 = fetch_fred("GS10", refresh)
+    gs10 = treasury_yield_history(refresh)
     bonds = bond_returns_from_yields(gs10)
     munis, muni_income = fetch_muni_returns(refresh)
 
-    cpi = fetch_fred("CPIAUCSL", refresh)
-    inflation = cpi.pct_change().rename("inflation").dropna()
+    # Seasonally adjusted CPI from 1947; the unadjusted index (1913+) before
+    # that, so the 1926-46 months carry some seasonal noise (sd 0.50%/mo vs
+    # 0.44 for the adjusted series on their overlap).
+    cpi_sa = fetch_fred("CPIAUCSL", refresh)
+    cpi_nsa = fetch_fred("CPIAUCNS", refresh)
+    inflation = pd.concat([
+        cpi_nsa.pct_change().dropna()[: cpi_sa.index.min() - 1],
+        cpi_sa.pct_change().dropna(),
+    ]).sort_index().rename("inflation")
 
     # Income-yield columns (monthly accrual rates) for taxable-account modeling.
     # Bonds/cash decompose exactly from the yield data; equity dividend yields

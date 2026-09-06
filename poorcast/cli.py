@@ -549,6 +549,16 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         help="months between rebalances (default 3 = quarterly; 12 = annual, "
         "a large value = never)",
     )
+    r.add_argument(
+        "--proxy",
+        default=None,
+        metavar="ASSET=STANDIN,...",
+        help="deep-history proxies: months where ASSET has no data take "
+        "STANDIN's returns and income instead of shortening the sample "
+        "window, e.g. intl_equities=us_equities to sample the 1926-54 US "
+        "record with a plan that holds international (perfectly correlated "
+        "to US equities in those months; the report says how many)",
+    )
     r.add_argument("--start", default="1955-01", help="earliest history to sample (default 1955-01, when every asset has data)")
     r.add_argument("--end", default=None, help="latest history to sample (default: all)")
     r.add_argument("--seed", type=int, default=None, help="random seed for reproducibility")
@@ -801,6 +811,24 @@ def main(argv: list[str] | None = None) -> int:
                 args.glide_to = rescale_equity(args.allocation, glide_equity / 100.0)
         except ValueError as e:
             print(f"error: {e}")
+            return 2
+
+    proxies = None
+    if getattr(args, "proxy", None):
+        if isinstance(args.proxy, dict):
+            proxies = dict(args.proxy)
+        else:
+            try:
+                proxies = {
+                    k.strip(): v.strip()
+                    for k, v in (pair.split("=", 1) for pair in args.proxy.split(","))
+                }
+            except ValueError:
+                print(f"error: bad --proxy entry in {args.proxy!r}; expected ASSET=STANDIN,...")
+                return 2
+        bad = [k for k, v in proxies.items() if k not in panel.columns or v not in panel.columns]
+        if bad:
+            print(f"error: unknown asset(s) in --proxy: {bad}")
             return 2
 
     return_adjustments = None
@@ -1108,6 +1136,7 @@ def main(argv: list[str] | None = None) -> int:
                 None if args.tips_ladder_tail is None
                 else args.tips_ladder_tail / 100.0
             ),
+            proxies=proxies,
             income=tuple(streams) or None,
             expenses=tuple(expenses) or None,
             tax_rate=0.0 if strip_tax else args.tax_rate / 100.0,

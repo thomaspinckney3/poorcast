@@ -202,6 +202,13 @@ class SimConfig:
     state_path: "object | None" = None  # (years*12,) assumed state levels
     state_bandwidth: float = 0.15  # kernel width in log-state units
     state_adjust_assets: tuple[str, ...] | None = None
+    # Deep-history proxies: {asset: stand_in}. Months where `asset` (and its
+    # income column) has no data take the stand-in's values instead of
+    # shortening the sample window - e.g. {'intl_equities': 'us_equities'}
+    # lets a plan holding international sample the 1926-54 US record, with
+    # international perfectly correlated to US equities in those blocks.
+    # The report states how many sampled months were proxied.
+    proxies: dict[str, str] | None = None
     age: int | None = None  # age at t=0; enables age-based features (RMDs)
     # 10% early-withdrawal penalty before age 59.5 (needs `age`): applies to
     # traditional draws and to the earnings portion of roth draws (beyond the
@@ -267,6 +274,8 @@ class SimResult:
     # (n_paths,) real dollars of spending the household could not deliver
     # (liquid exhausted while a target remained). Ladder runs only.
     total_unmet_real: np.ndarray | None = None
+    # {asset: months of the window filled from its proxy}, when proxies are set.
+    proxied: dict[str, int] | None = None
 
     @property
     def real_balance(self) -> np.ndarray:
@@ -283,9 +292,18 @@ class SimResult:
 
 def _historical_matrix(
     panel: pd.DataFrame, assets: list[str], cfg: SimConfig, need_income: bool = False
-) -> tuple[np.ndarray, np.ndarray, pd.PeriodIndex, np.ndarray | None]:
-    """Rows = historical months in the sample window with data for every series."""
-    cols = panel[assets + ["inflation"]]
+) -> tuple[np.ndarray, np.ndarray, pd.PeriodIndex, np.ndarray | None, dict]:
+    """Rows = historical months in the sample window with data for every series
+    (proxied where cfg.proxies says so)."""
+    cols = panel[assets + ["inflation"]].copy()
+    proxied: dict[str, int] = {}
+    for a, stand_in in (cfg.proxies or {}).items():
+        if a == stand_in or stand_in not in panel.columns:
+            raise ValueError(f"proxy for {a!r} must name another panel asset, got {stand_in!r}")
+        if a in cols:
+            gap = cols[a].isna() & panel[stand_in].notna()
+            cols.loc[gap, a] = panel.loc[gap, stand_in]
+            proxied[a] = gap
     window = cols.dropna()
     window = window[window.index >= pd.Period(cfg.sample_start, freq="M")]
     if cfg.sample_end:
@@ -304,8 +322,14 @@ def _historical_matrix(
                 f"panel lacks income columns {missing} needed for tax modeling; "
                 "run 'poorcast fetch' to rebuild the data"
             )
-        income = panel[inc_cols].reindex(window.index).ffill().fillna(0.0).to_numpy()
-    return window[assets].to_numpy(), window["inflation"].to_numpy(), window.index, income
+        inc = panel[inc_cols].copy()
+        for a, stand_in in (cfg.proxies or {}).items():
+            if a in assets and f"income_{stand_in}" in panel.columns:
+                inc[f"income_{a}"] = inc[f"income_{a}"].fillna(panel[f"income_{stand_in}"])
+        income = inc.reindex(window.index).ffill().fillna(0.0).to_numpy()
+    counts = {a: int(g.reindex(window.index).fillna(False).sum()) for a, g in proxied.items()}
+    counts = {a: n for a, n in counts.items() if n}
+    return window[assets].to_numpy(), window["inflation"].to_numpy(), window.index, income, counts
 
 
 def _slot_weights(
@@ -632,7 +656,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 "for distribution taxation"
             )
     taxed = tax_i is not None and any_tax_setting
-    returns_hist, inflation_hist, window, income_hist = _historical_matrix(
+    returns_hist, inflation_hist, window, income_hist, proxied = _historical_matrix(
         panel, assets, cfg, need_income=taxed
     )
     rng = np.random.default_rng(cfg.seed)
@@ -1394,6 +1418,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         ),
         ladder_annual=ladder_annual_total or None,
         total_unmet_real=total_unmet_real if acct_ladders else None,
+        proxied=proxied or None,
     )
 
 

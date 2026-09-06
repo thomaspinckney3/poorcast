@@ -1,6 +1,7 @@
 """Tests for the data layer's parsers (offline, synthetic inputs)."""
 
 import numpy as np
+import pytest
 import pandas as pd
 
 from poorcast import data
@@ -37,3 +38,13 @@ def test_shiller_link_scraped_from_page():
     assert data.shiller_link_from_page(html) == (
         "https://img1.wsimg.com/blobby/go/abc/downloads/def/ie_data.xls?ver=123")
     assert data.shiller_link_from_page("<p>nothing</p>") is None
+
+
+def test_splice_yields_fills_with_level_adjusted_secondary():
+    i1 = pd.period_range("1950-01", periods=3, freq="M")
+    i2 = pd.period_range("1949-11", periods=4, freq="M")
+    primary = pd.Series([3.0, 3.1, 3.2], index=i1)
+    secondary = pd.Series([2.5, 2.6, 2.7, 2.8], index=i2)
+    out = data.splice_yields(primary, secondary, 0.4)
+    assert list(out.index.astype(str)) == ["1949-11", "1949-12", "1950-01", "1950-02", "1950-03"]
+    assert out.tolist() == pytest.approx([2.9, 3.0, 3.0, 3.1, 3.2])  # secondary+0.4 only where primary is missing

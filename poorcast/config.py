@@ -162,7 +162,7 @@ TOP_KEYS = {
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
     "taxes", "tips_ladder", "simulation", "output",
     "account", "withdraw_order", "adjustments", "pe_path",
-    "pe_conditioned", "pe_bandwidth",
+    "pe_conditioned", "pe_bandwidth", "proxies",
 }
 OPTIMIZE_KEYS = {"equity", "ladder", "tolerance", "anchor", "stress"}
 OPTIMIZE_GRID_KEYS = ("equity", "ladder")
@@ -250,6 +250,13 @@ def load_config(path: str) -> dict:
         if not isinstance(adj, dict) or not adj:
             raise ConfigError("[adjustments] must be a table of asset = percent/yr")
         out["adjust"] = {k: _num(v, f"adjustments.{k}") for k, v in adj.items()}
+
+    # Deep-history proxies: [proxies] intl_equities = "us_equities"
+    if "proxies" in raw:
+        pr = raw["proxies"]
+        if not isinstance(pr, dict) or not pr:
+            raise ConfigError("[proxies] must be a table of asset = \"stand_in\"")
+        out["proxy"] = {k: _str(v, f"proxies.{k}") for k, v in pr.items()}
 
     # Multi-account household: repeated [[account]] sections.
     if "account" in raw:

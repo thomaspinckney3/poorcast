@@ -427,6 +427,10 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
         if cfg.mode == "bootstrap"
         else f"all {result.n_paths} historical {cfg.years}-year windows"
     )
+    if result.proxied:
+        mode += " · proxied " + ", ".join(
+            f"{a} by {cfg.proxies[a]} for {n} months" for a, n in result.proxied.items()
+        )
     if cfg.return_adjustments:
         adjs = ", ".join(
             f"{k} {v * 100:+.2f}%/yr"

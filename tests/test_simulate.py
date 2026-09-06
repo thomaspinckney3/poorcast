@@ -409,3 +409,20 @@ def test_flex_stats_measure_time_below_target_and_budget_delivered():
     assert fx["never_cut"] == 0.0
     # no flex -> no stats
     assert flex_stats(simulate(panel, cfg(withdrawal=Withdrawal("fixed_real", rate=0.05)))) is None
+
+
+def test_proxies_extend_the_window_and_are_counted():
+    # asset b has no data for the first 120 months; proxied by a, the window
+    # covers all 480 months and b's early returns equal a's
+    n = 480
+    idx = pd.period_range("1926-07", periods=n, freq="M")
+    a = np.full(n, 0.01); b = np.full(n, 0.005); b[:120] = np.nan
+    panel = pd.DataFrame({"a": a, "b": b, "inflation": np.zeros(n)}, index=idx)
+    base = dict(allocation={"a": 0.5, "b": 0.5}, years=2, n_sims=4, seed=0,
+                sample_start="1926-01", account="roth")
+    r = simulate(panel, SimConfig(**base, proxies={"b": "a"}))
+    assert len(r.window) == n and r.proxied == {"b": 120}
+    r0 = simulate(panel, SimConfig(**base))
+    assert len(r0.window) == n - 120 and r0.proxied is None
+    with pytest.raises(ValueError, match="proxy"):
+        simulate(panel, SimConfig(**base, proxies={"b": "zzz"}))

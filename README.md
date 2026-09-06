@@ -485,16 +485,27 @@ stress = [{year = 0, pe = 30}, {year = 10, pe = 10}, {year = 40, pe = 25}]
 | `us_equities` | 1926+ | CRSP value-weighted total market (Ken French library) |
 | `us_small_cap` | 1926+ | bottom 30% by market cap, value-weighted (Ken French) |
 | `intl_equities` | 1955+ | reconstructed composite of up to 8 countries (1955–85), AQR Global ex USA (1986–90), Ken French Developed ex US (1990+) |
-| `us_bonds_10yr` | 1953+ | 10-yr Treasury total return derived from FRED GS10 yields |
-| `muni_bonds` | 1953+ | Bond Buyer GO-20 yields priced at their 20y maturity through 2007, observed MUB ETF total returns after |
+| `us_bonds_10yr` | 1925+ | 10-yr Treasury total return derived from FRED GS10 yields (1953+), extended with the Fed's long-term government composite (LTGOVTBD, level-adjusted) before |
+| `muni_bonds` | 1925+ | Bond Buyer GO-20 yields (1953+) priced at their 20y maturity through 2007, observed MUB ETF total returns after; NBER high-grade muni yields 1937–52 (level-adjusted) and a Treasury-ratio proxy before 1937 |
 | `cash` | 1926+ | 1-month T-bill (Ken French) |
 
-US CPI (FRED `CPIAUCSL`) is carried alongside and sampled jointly, driving
+US CPI (FRED `CPIAUCSL` from 1947, the unadjusted `CPIAUCNS` before) is
+carried alongside and sampled jointly, driving
 inflation-adjusted withdrawals and real-dollar reporting. All returns are
 monthly, USD, total return. Default sampling starts in 1955, the first year
 every asset has data (`--start` moves it; `--start 1926-01` reaches deeper
-history for US-only mixes). The sampler automatically narrows the window to
-the months where every asset in *your* allocation has data.
+history for mixes without international). The sampler automatically narrows
+the window to the months where every asset in *your* allocation has data.
+
+**Deep history with proxies.** `--proxy intl_equities=us_equities` (or a
+`[proxies]` table) fills an asset's missing months with a stand-in's returns
+and income instead of shortening the window, so a plan that holds
+international can sample 1926–54: in those months international moves
+one-for-one with US equities, and the run description says how many sampled
+months were proxied. Before 1953 Treasuries come from the Fed's long-bond
+composite, whose yields were pegged from 1942 to the March 1951 Accord, and
+munis before 1937 are a Treasury-ratio proxy — weaker data than the rest, so
+treat deep-history runs as a sensitivity.
 
 **Custom data:** drop `data/custom/<asset>.csv` (`month,return` rows like
 `1970-01,0.023`) and rerun `poorcast fetch` — it overrides the built-in series
