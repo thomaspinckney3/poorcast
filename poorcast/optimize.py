@@ -338,8 +338,14 @@ def _score_with(panel, base, stress, over, sims, seed):
     return s
 
 
-def _run_tasks(panel, base, stress, payloads, jobs):
-    """Score payloads, in a process pool when jobs > 1. Order is preserved."""
+def _run_tasks(panel, base, stress, payloads, jobs, on_result=None):
+    """Score payloads, in a process pool when jobs > 1.
+
+    Results are yielded in submission order either way, and `on_result` is
+    called with (index, score) as each arrives so a long grid still reports
+    progress while it runs rather than going silent until the batch lands.
+    """
+    out = []
     if jobs and jobs > 1 and len(payloads) > 1:
         from concurrent.futures import ProcessPoolExecutor
 
@@ -348,8 +354,17 @@ def _run_tasks(panel, base, stress, payloads, jobs):
             initializer=_init_worker,
             initargs=(panel, base, stress),
         ) as ex:
-            return list(ex.map(_score_task, payloads, chunksize=1))
-    return [_score_with(panel, base, stress, *p) for p in payloads]
+            for i, sc in enumerate(ex.map(_score_task, payloads, chunksize=1)):
+                out.append(sc)
+                if on_result:
+                    on_result(i, sc)
+        return out
+    for i, pl in enumerate(payloads):
+        sc = _score_with(panel, base, stress, *pl)
+        out.append(sc)
+        if on_result:
+            on_result(i, sc)
+    return out
 
 
 def optimize_household(
@@ -488,21 +503,25 @@ def optimize_household(
                             )
                         cands.append((label + clipped, over))
 
+    def _report(i, sc):
+        if not progress:
+            return
+        extra = (f", stress {sc['stress_success']:.1%}"
+                 if "stress_success" in sc else "")
+        progress(
+            f"  {cands[i][0]}: success {sc['success']:.1%}{extra}, "
+            f"p5 ${sc['p5'] / 1e6:.2f}M, median ${sc['median'] / 1e6:.1f}M"
+        )
+
     results = _run_tasks(
         panel, base, stress,
         [(over, screen_sims, screen_seed) for _, over in cands],
-        jobs,
+        jobs, on_result=_report,
     )
-    rows = []
-    for (label, over), sc in zip(cands, results):
-        rows.append({"label": label, "overrides": over, **sc, "success_sd": 0.0})
-        if progress:
-            extra = (f", stress {sc['stress_success']:.1%}"
-                     if "stress_success" in sc else "")
-            progress(
-                f"  {label}: success {sc['success']:.1%}{extra}, "
-                f"p5 ${sc['p5'] / 1e6:.2f}M, median ${sc['median'] / 1e6:.1f}M"
-            )
+    rows = [
+        {"label": label, "overrides": over, **sc, "success_sd": 0.0}
+        for (label, over), sc in zip(cands, results)
+    ]
     rows.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
 
     if success_tolerance > 0:
