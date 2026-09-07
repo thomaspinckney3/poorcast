@@ -127,3 +127,41 @@ def test_spent_income_is_still_taxed():
     # ~40% of ~$5/mo income over 120 months on a shrinking base (withdrawals
     # and the tax itself drain it); the constant-base ceiling would be $240
     assert 120 < r.total_tax_real[0] < 240
+
+
+def test_equity_cost_basis_applies_to_equities_only():
+    # us_equities appreciates, us_bonds_10yr is flat. With equity_cost_basis
+    # the gain sits only in the equity sleeve; the bond sleeve starts at par.
+    n = 480
+    idx = pd.period_range("1960-01", periods=n, freq="M")
+    panel = pd.DataFrame(
+        {
+            "us_equities": np.full(n, 0.006),
+            "us_bonds_10yr": np.zeros(n),
+            "inflation": np.zeros(n),
+            "income_us_equities": np.zeros(n),
+            "income_us_bonds_10yr": np.zeros(n),
+        },
+        index=idx,
+    )
+    base = dict(
+        allocation={"us_equities": 0.5, "us_bonds_10yr": 0.5},
+        initial=1000.0, years=10, n_sims=2, seed=0, tax_rate=0.20,
+        withdrawal=Withdrawal("fixed_real", rate=0.04),
+    )
+    full = simulate(panel, SimConfig(**base))
+    eq_half = simulate(panel, SimConfig(**base, equity_cost_basis_start=0.5))
+    # Half the portfolio starts with half its value as gain -> more tax.
+    assert (eq_half.total_tax_real > full.total_tax_real).all()
+    # A flat 0.5 basis puts gain in the bond sleeve too, so it must tax more
+    # than applying 0.5 to equities alone.
+    flat_half = simulate(panel, SimConfig(**base, cost_basis_start=0.5))
+    assert (flat_half.total_tax_real > eq_half.total_tax_real).all()
+
+
+def test_equity_cost_basis_rejects_out_of_range():
+    panel = panel_with_income(np.full(480, 0.006))
+    cfg = SimConfig(allocation={"a": 1.0}, initial=1000.0, years=10, n_sims=2,
+                    seed=0, tax_rate=0.20, equity_cost_basis_start=1.5)
+    with pytest.raises(ValueError, match="equity_cost_basis"):
+        simulate(panel, cfg)

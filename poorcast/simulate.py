@@ -87,6 +87,12 @@ class Account:
     # 529 (multi-account mode): the contribution fraction for the pro-rata
     # earnings/basis split on non-qualified draws.
     cost_basis: float = 1.0
+    # Taxable only: starting basis fraction applied to EQUITY_ASSETS alone,
+    # with every other liquid holding starting at full basis. Set this when
+    # the embedded gain sits in the equity sleeve and the bond sleeve carries
+    # none, which is the usual case. None = fall back to the flat
+    # `cost_basis` across every asset.
+    equity_cost_basis: float | None = None
     # This account's own draw schedule: (start_month, annual real dollars)
     # steps, drawn from this account each month ON TOP of the household
     # withdrawal policy (which is never flexed/declined into it). A 529's
@@ -149,6 +155,8 @@ class SimConfig:
     # free investing.
     fee_annual: float = 0.0
     cost_basis_start: float = 1.0  # initial basis as fraction of starting value
+    # Single-account equivalent of Account.equity_cost_basis.
+    equity_cost_basis_start: float | None = None
     # Account type: 'taxable' (default) uses the full basis/income machinery
     # above. 'traditional' (IRA/401k) taxes nothing inside the account but
     # taxes every distribution as ordinary income (through tax_brackets, or a
@@ -384,6 +392,9 @@ def _sample_months(
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 DEFAULT_WITHDRAW_ORDER = ("taxable", "traditional", "roth", "529")
 LADDER_ASSET = "tips_ladder"  # reserved allocation name: buys held-to-maturity rungs
+# Assets whose starting basis is set by Account.equity_cost_basis; every
+# other liquid holding starts at full basis (bonds and cash carry no gain).
+EQUITY_ASSETS = frozenset({"us_equities", "us_small_cap", "intl_equities"})
 
 
 def total_initial(cfg: SimConfig) -> float:
@@ -487,7 +498,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             )
         specs = (
             Account(kind=cfg.account, balance=cfg.initial,
-                    allocation=cfg.allocation, cost_basis=cfg.cost_basis_start),
+                    allocation=cfg.allocation, cost_basis=cfg.cost_basis_start,
+                    equity_cost_basis=cfg.equity_cost_basis_start),
         )
         kinds = [cfg.account]
         draw_order = [0]
@@ -793,7 +805,22 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         # Raw weights: the ladder share of the balance bought rungs at t=0,
         # leaving balance x asset-weight dollars in each liquid asset.
         h = np.tile(acct_w_raw[i] * s.balance, (n_paths, 1))  # (n_paths, n_assets)
-        b = h * s.cost_basis  # average-cost basis per asset (taxable only)
+        # Average-cost basis per asset (taxable only). With equity_cost_basis
+        # the fraction applies to the equity sleeve alone and everything else
+        # starts at full basis; otherwise the flat cost_basis covers all.
+        if s.equity_cost_basis is None:
+            b = h * s.cost_basis
+        else:
+            if not 0 <= s.equity_cost_basis <= 1:
+                raise ValueError(
+                    "equity_cost_basis must be in [0, 1], got "
+                    f"{s.equity_cost_basis}"
+                )
+            frac = np.array(
+                [s.equity_cost_basis if a in EQUITY_ASSETS else 1.0 for a in assets],
+                dtype=float,
+            )
+            b = h * frac[None, :]
         accts.append(_Acct(kinds[i], acct_w[i], h, b,
                            taxed and kinds[i] == "taxable"))
     inflow_i = tax_i if tax_i is not None else draw_order[0]

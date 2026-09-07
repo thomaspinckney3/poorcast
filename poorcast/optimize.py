@@ -13,7 +13,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from .simulate import SimConfig, simulate
+from .simulate import EQUITY_ASSETS, SimConfig, simulate
 
 EQUITY_LEVELS = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 EQ_SPLITS = {  # us_equities, us_small_cap, intl_equities
@@ -120,7 +120,6 @@ def optimize(
 
 # --- household-mode optimization --------------------------------------------
 
-EQUITY_ASSETS = frozenset({"us_equities", "us_small_cap", "intl_equities"})
 LADDER = "tips_ladder"
 
 

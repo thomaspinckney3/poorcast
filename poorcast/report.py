@@ -311,6 +311,11 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
                 desc += f" ({_alloc_str(a.allocation)})"
             if a.allocation_end:
                 desc += f" gliding to {_alloc_str(a.allocation_end)}"
+            if a.kind == "taxable":
+                if a.equity_cost_basis is not None:
+                    desc += f" [equity basis {a.equity_cost_basis:.0%}]"
+                elif a.cost_basis != 1:
+                    desc += f" [basis {a.cost_basis:.0%}]"
             if a.schedule:
                 steps = ", ".join(
                     f"${amt:,.0f}/yr from {_when(sm)}" for sm, amt in a.schedule if amt

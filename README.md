@@ -368,7 +368,10 @@ Real households hold several accounts with different tax treatments. Repeated
 [[account]]
 type = "taxable"
 balance = 1_500_000
-cost_basis = 0.6
+equity_cost_basis = 0.5     # the equity sleeve is half unrealized gain;
+                            # bonds and cash start at full basis. Use
+                            # cost_basis instead for one flat fraction
+                            # across every holding in the account.
 allocation = { us_equities = 60, muni_bonds = 35, cash = 5 }
 
 [[account]]

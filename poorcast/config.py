@@ -273,7 +273,8 @@ def load_config(path: str) -> dict:
                 raise ConfigError(f"{where} must be a table")
             _reject_unknown(
                 e,
-                {"type", "balance", "allocation", "cost_basis", "schedule", "glide_to"},
+                {"type", "balance", "allocation", "cost_basis", "equity_cost_basis",
+                 "schedule", "glide_to"},
                 where,
             )
             for key in ("type", "balance"):
@@ -287,6 +288,13 @@ def load_config(path: str) -> dict:
                 acct["allocation"] = _allocation(e["allocation"], f"{where}.allocation")
             if "cost_basis" in e:
                 acct["cost_basis"] = _num(e["cost_basis"], f"{where}.cost_basis")
+            if "equity_cost_basis" in e:
+                v = _num(e["equity_cost_basis"], f"{where}.equity_cost_basis")
+                if not 0 <= v <= 1:
+                    raise ConfigError(
+                        f"{where}.equity_cost_basis is a fraction of value (0-1)"
+                    )
+                acct["equity_cost_basis"] = v
             if "schedule" in e:
                 # Kept as CLI schedule text; the CLI resolves ages via --age.
                 acct["schedule"] = _schedule_text(e["schedule"], f"{where}.schedule")
