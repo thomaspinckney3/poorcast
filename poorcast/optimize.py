@@ -302,6 +302,56 @@ def tolerance_picks(rows: list, anchor: str = "base",
     return {t: pick_within_tolerance(rows, t, anchor) for t in tolerances}
 
 
+# Parallel scoring. Candidates are independent and each carries its own seed,
+# so results are identical to running them in order; only the wall clock
+# changes. Workers are given the panel and the two scenario configs once at
+# start-up rather than once per task, since the panel is the only large thing
+# involved and a grid dispatches hundreds of tasks.
+_W: dict = {}
+
+
+def _init_worker(panel, base, stress):
+    _W["panel"], _W["base"], _W["stress"] = panel, base, stress
+
+
+def _score_task(payload):
+    over, sims, seed = payload
+    return _score_with(_W["panel"], _W["base"], _W["stress"], over, sims, seed)
+
+
+def _score_with(panel, base, stress, over, sims, seed):
+    from .simulate import simulate
+
+    def stats(r):
+        term = r.real_balance[:, -1]
+        return {
+            "success": r.success_rate,
+            "p5": float(np.percentile(term, 5)),
+            "median": float(np.median(term)),
+            "floor": float(r.ladder_annual or 0.0),
+        }
+
+    s = stats(simulate(panel, replace(base, **over, n_sims=sims, seed=seed)))
+    if stress is not None:
+        r = simulate(panel, replace(stress, **over, n_sims=sims, seed=seed))
+        s["stress_success"] = r.success_rate
+    return s
+
+
+def _run_tasks(panel, base, stress, payloads, jobs):
+    """Score payloads, in a process pool when jobs > 1. Order is preserved."""
+    if jobs and jobs > 1 and len(payloads) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        with ProcessPoolExecutor(
+            max_workers=min(jobs, len(payloads)),
+            initializer=_init_worker,
+            initargs=(panel, base, stress),
+        ) as ex:
+            return list(ex.map(_score_task, payloads, chunksize=1))
+    return [_score_with(panel, base, stress, *p) for p in payloads]
+
+
 def optimize_household(
     panel,
     base,
@@ -314,6 +364,7 @@ def optimize_household(
     screen_sims: int = 4000,
     refine_seeds: tuple[int, ...] = (42, 7, 123),
     top_k: int = 5,
+    jobs: int = 1,
     progress=None,
     stress=None,
     success_tolerance: float = 0.0,
@@ -399,7 +450,9 @@ def optimize_household(
     shapes = list(shape_grid or [base.ladder_shape])
     ss_ages = list(ss_grid or [None])
     glides = list(glide_grid or [None])
-    rows = []
+    # Enumerate the grid first, then score it: with jobs > 1 the candidates
+    # are dispatched to a process pool, and every one is independent.
+    cands = []
     seen = set()
     for L in ladder_grid:
         actual = min(L, capacity)
@@ -433,18 +486,23 @@ def optimize_household(
                             label += (
                                 " · static" if gl is None else f" · glide→{gl:.0%}"
                             )
-                        s = score(over, screen_sims, screen_seed)
-                        row = {"label": label + clipped, "overrides": over,
-                               **s, "success_sd": 0.0}
-                        rows.append(row)
-                        if progress:
-                            extra = (f", stress {s['stress_success']:.1%}"
-                                     if "stress_success" in s else "")
-                            progress(
-                                f"  {row['label']}: success {s['success']:.1%}"
-                                f"{extra}, p5 ${s['p5'] / 1e6:.2f}M, "
-                                f"median ${s['median'] / 1e6:.1f}M"
-                            )
+                        cands.append((label + clipped, over))
+
+    results = _run_tasks(
+        panel, base, stress,
+        [(over, screen_sims, screen_seed) for _, over in cands],
+        jobs,
+    )
+    rows = []
+    for (label, over), sc in zip(cands, results):
+        rows.append({"label": label, "overrides": over, **sc, "success_sd": 0.0})
+        if progress:
+            extra = (f", stress {sc['stress_success']:.1%}"
+                     if "stress_success" in sc else "")
+            progress(
+                f"  {label}: success {sc['success']:.1%}{extra}, "
+                f"p5 ${sc['p5'] / 1e6:.2f}M, median ${sc['median'] / 1e6:.1f}M"
+            )
     rows.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
 
     if success_tolerance > 0:
@@ -461,9 +519,14 @@ def optimize_household(
     else:
         chosen = rows[:top_k]
 
+    refine_payloads = [
+        (row["overrides"], base.n_sims, seed)
+        for row in chosen for seed in refine_seeds
+    ]
+    refine_out = _run_tasks(panel, base, stress, refine_payloads, jobs)
     refined = []
-    for row in chosen:
-        runs = [score(row["overrides"], base.n_sims, seed) for seed in refine_seeds]
+    for ri, row in enumerate(chosen):
+        runs = refine_out[ri * len(refine_seeds):(ri + 1) * len(refine_seeds)]
         succ = [r["success"] for r in runs]
         out = {
             "label": row["label"], "overrides": row["overrides"], "floor": row["floor"],

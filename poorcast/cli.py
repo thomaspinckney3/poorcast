@@ -389,6 +389,15 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "5/7/10/20/30y, interpolated) instead of a flat --tips-ladder-yield",
     )
     r.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="processes used to score optimizer candidates (default: as many "
+        "as the machine has cores, capped at 12; 1 disables). Candidates are "
+        "independent and carry their own seeds, so results do not change",
+    )
+    r.add_argument(
         "--ladder-shape",
         dest="ladder_shape",
         choices=("level", "spending"),
@@ -709,6 +718,16 @@ def _run_ladder(args) -> int:
         return 2
     one(annual=args.annual, cost=args.cost, taxable=args.taxable)
     return 0
+
+
+def _resolve_jobs(requested):
+    """Worker count for optimizer scoring: explicit, else one per core to a
+    cap that keeps peak memory well inside a normal machine."""
+    import os
+
+    if requested is not None:
+        return max(1, requested)
+    return max(1, min(os.cpu_count() or 1, 12))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1241,6 +1260,7 @@ def main(argv: list[str] | None = None) -> int:
                 panel, cfg, e_vals, L_vals, progress=lambda s: print(s, flush=True),
                 stress=stress_cfg, success_tolerance=opt_tol / 100.0,
                 anchor=opt_anchor, return_screen=True,
+                jobs=_resolve_jobs(getattr(args, "jobs", None)),
                 shape_grid=getattr(args, "optimize_shape", None),
                 ss_grid=getattr(args, "optimize_ss", None),
                 glide_grid=getattr(args, "optimize_glide", None),
