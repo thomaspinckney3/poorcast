@@ -377,37 +377,6 @@ def _slot_weights(
     return W
 
 
-# One-entry cache of the sampled month indices and the history they gather.
-# Scoring a candidate in a base and a stress world runs the same seed over the
-# same window twice, and an optimizer grid does that hundreds of times: the
-# months and the raw returns/inflation/income they pull out are identical
-# every time, and only the per-scenario return adjustment differs. Those
-# arrays are read-only downstream (the adjustment rebinds rather than mutates)
-# so they are safe to share. Held one deep because each entry is hundreds of
-# megabytes; a differing key simply replaces it.
-_SAMPLE_CACHE: dict = {}
-
-
-def _sample_cache_key(cfg, window, assets, slot_weights, returns_hist, inflation_hist):
-    # Key on the history's CONTENT, not on the panel object: id() is reused
-    # after garbage collection, which would silently serve one panel's sample
-    # for another's. The window is a few hundred rows, so hashing is cheap.
-    w = None
-    if slot_weights is not None:
-        w = (slot_weights.shape, hash(slot_weights.tobytes()))
-    return (
-        cfg.seed, cfg.n_sims, cfg.years, cfg.block_months, cfg.mode,
-        str(window[0]), str(window[-1]), len(window), tuple(assets), w,
-        hash(np.ascontiguousarray(returns_hist).tobytes()),
-        hash(np.ascontiguousarray(inflation_hist).tobytes()),
-    )
-
-
-def clear_sample_cache() -> None:
-    """Drop the cached sample. Only needed if a panel is mutated in place."""
-    _SAMPLE_CACHE.clear()
-
-
 def _sample_months(
     cfg: SimConfig,
     t_hist: int,
@@ -805,14 +774,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         block = max(1, min(cfg.block_months, len(window)))
         n_blocks = -(-(cfg.years * 12) // block)
         W = _slot_weights(state_log, path_log, block, n_blocks, cfg.state_bandwidth)
-    _key = _sample_cache_key(
-        cfg, window, assets, W, returns_hist, inflation_hist
-    )
-    _hit = _SAMPLE_CACHE.get(_key)
-    if _hit is None:
-        months = _sample_months(cfg, len(window), rng, slot_weights=W)
-    else:
-        months = _hit[0]
+    months = _sample_months(cfg, len(window), rng, slot_weights=W)
     n_paths, n_months = months.shape
 
     # State-conditioned drift re-centering: replace each block's conditional
@@ -834,14 +796,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
 
     if not 0 <= cfg.fee_annual < 0.1:
         raise ValueError(f"fee_annual must be in [0, 0.1), got {cfg.fee_annual}")
-    if _hit is None:
-        raw_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
-        raw_inflation = inflation_hist[months]  # (n_paths, n_months)
-        _SAMPLE_CACHE.clear()
-        _SAMPLE_CACHE[_key] = (months, raw_returns, raw_inflation)
-    else:
-        _, raw_returns, raw_inflation = _hit
-    path_returns = raw_returns
+    path_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
     if eff_adj or cfg.fee_annual:
         vals = [eff_adj.get(a, 0.0) for a in assets]
         if any(np.ndim(v) > 0 for v in vals):
@@ -859,7 +814,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         else:
             adj = np.array(vals)
             path_returns = path_returns + (adj - cfg.fee_annual)[None, None, :] / 12.0
-    path_inflation = raw_inflation
+    path_inflation = inflation_hist[months]  # (n_paths, n_months)
     e5 = min(60, n_months)
     early_real_market = (
         np.log1p(path_returns[:, :e5, :] @ weights) - np.log1p(path_inflation[:, :e5])
