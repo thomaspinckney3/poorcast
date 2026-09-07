@@ -1138,7 +1138,8 @@ def main(argv: list[str] | None = None) -> int:
             --multiple-expansion haircut (the path IS the valuation
             assumption), so it starts from the --adjust extras alone."""
             if not points:
-                return dict(return_adjustments=return_adjustments)
+                return dict(return_adjustments=return_adjustments,
+                            pe_path_assumed=False)
             if args.pe_conditioned:
                 import numpy as np
 
@@ -1149,6 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
                     [[0.0], np.cumsum(rates[:-1] / 12.0)]
                 ))
                 return dict(
+                    pe_path_assumed=True,
                     return_adjustments=dict(adjust_extra) or None,
                     state_series=shiller_pe_series(),
                     state_path=levels,
@@ -1159,7 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
             adj = dict(adjust_extra)
             for a in ("us_equities", "us_small_cap"):
                 adj[a] = adj.get(a, 0.0) + arr
-            return dict(return_adjustments=adj)
+            return dict(return_adjustments=adj, pe_path_assumed=True)
 
         scenario = scenario_fields(pe_points)
         run_adjustments = scenario.pop("return_adjustments")
@@ -1253,19 +1255,25 @@ def main(argv: list[str] | None = None) -> int:
                     state_series=sf.get("state_series"), state_path=sf.get("state_path"),
                     state_bandwidth=sf.get("state_bandwidth", cfg.state_bandwidth),
                     state_adjust_assets=sf.get("state_adjust_assets"),
+                    pe_path_assumed=sf.get("pe_path_assumed", True),
                 )
             print(f"\nSearching household allocations for the {years}-year "
                   f"horizon ({n_cand} candidates, then refinement)...")
-            best, board, screened = optimize_household(
-                panel, cfg, e_vals, L_vals, progress=lambda s: print(s, flush=True),
-                stress=stress_cfg, success_tolerance=opt_tol / 100.0,
-                anchor=opt_anchor, return_screen=True,
-                jobs=_resolve_jobs(getattr(args, "jobs", None)),
-                shape_grid=getattr(args, "optimize_shape", None),
-                ss_grid=getattr(args, "optimize_ss", None),
-                glide_grid=getattr(args, "optimize_glide", None),
-                glide_years=getattr(args, "optimize_glide_years", None),
-            )
+            try:
+                best, board, screened = optimize_household(
+                    panel, cfg, e_vals, L_vals,
+                    progress=lambda s: print(s, flush=True),
+                    stress=stress_cfg, success_tolerance=opt_tol / 100.0,
+                    anchor=opt_anchor, return_screen=True,
+                    jobs=_resolve_jobs(getattr(args, "jobs", None)),
+                    shape_grid=getattr(args, "optimize_shape", None),
+                    ss_grid=getattr(args, "optimize_ss", None),
+                    glide_grid=getattr(args, "optimize_glide", None),
+                    glide_years=getattr(args, "optimize_glide_years", None),
+                )
+            except ValueError as e:
+                print(f"error: {e}")
+                return 2
             has_stress = stress_cfg is not None
             print("\nRefined candidates (success mean ± sd across seeds"
                   + (" · stress success" if has_stress else "")

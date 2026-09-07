@@ -1,5 +1,7 @@
 """Tests for household-mode optimization (equity share x ladder total)."""
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -341,3 +343,37 @@ def test_glide_search_requires_glide_years():
     with pytest.raises(ValueError, match="glide_years"):
         optimize_household(panel, base, equity_grid=[0.7], ladder_grid=[0.0],
                            glide_grid=[0.9], screen_sims=20, refine_seeds=(3,))
+
+
+def test_glide_search_is_refused_under_an_assumed_pe_path():
+    # A rising-equity glide is underweight equities early and overweight
+    # late, which is exactly the shape of every assumed P/E path here, so a
+    # glide searched under one measures the assumption. Tested against
+    # 1926-2026 with no valuation assumption the glide's success and tail
+    # benefit survives but its estate advantage vanishes, so the search has
+    # to be run valuation-agnostic to mean anything.
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    panel = pd.DataFrame({
+        "us_equities": np.full(480, 0.005), "cash": np.full(480, 0.002),
+        "inflation": np.zeros(480),
+    }, index=idx)
+    base = SimConfig(
+        accounts=(Account("taxable", 1_000_000.0,
+                          allocation={"us_equities": 0.7, "cash": 0.3}),),
+        years=5, age=55, n_sims=20, seed=3, glide_years=3,
+        withdrawal=Withdrawal("fixed_real", rate=0.04),
+    )
+    kw = dict(equity_grid=[0.7], ladder_grid=[0.0], glide_grid=[None, 0.9],
+              screen_sims=20, refine_seeds=(3,))
+    # valuation-agnostic: allowed
+    optimize_household(panel, base, **kw)
+    # under a path: refused, in the base world or only in the stress world
+    with pytest.raises(ValueError, match="assumed P/E path"):
+        optimize_household(panel, replace(base, pe_path_assumed=True), **kw)
+    with pytest.raises(ValueError, match="assumed P/E path"):
+        optimize_household(panel, base,
+                           stress=replace(base, pe_path_assumed=True), **kw)
+    # a search WITHOUT a glide is unaffected by the path
+    optimize_household(panel, replace(base, pe_path_assumed=True),
+                       equity_grid=[0.5, 0.7], ladder_grid=[0.0],
+                       screen_sims=20, refine_seeds=(3,))

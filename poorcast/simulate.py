@@ -165,6 +165,10 @@ class SimConfig:
     # the rungs hedge the floor they are bought for instead of
     # over-insuring the late years.
     ladder_shape: str = "level"
+    # True when an explicit P/E path supplies the valuation assumption
+    # (rather than history being left as sampled). Recorded so searches
+    # that a valuation path would bias can refuse to run under one.
+    pe_path_assumed: bool = False
     ladder_placement: str = "prorata"
     # ladder_placement="maturity": the age at which the tax-deferred
     # account's rung window opens. None = the RMD age, the latest start

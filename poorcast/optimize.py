@@ -462,6 +462,24 @@ def optimize_household(
             raise ValueError(
                 "a glide search needs glide_years (how long the drift takes)"
             )
+        # A glidepath searched under an assumed P/E path is not measuring
+        # sequence risk, it is trading the forecast. Every path this note
+        # uses declines and then recovers, and a rising-equity glide is
+        # underweight equities during the assumed bad years and overweight
+        # during the assumed good ones. Tested against a century of history
+        # with no valuation assumption, the glide's SUCCESS and tail benefit
+        # survives intact but its median-estate advantage disappears
+        # entirely - so a search run under a path overstates the case.
+        if base.pe_path_assumed or (stress is not None and stress.pe_path_assumed):
+            raise ValueError(
+                "a glide search cannot run under an assumed P/E path: the "
+                "path's decline-then-recover shape is what a rising-equity "
+                "glide is built to exploit, so the result measures the "
+                "assumption rather than the strategy. Search the glide "
+                "valuation-agnostic instead (drop pe_path and the optimizer "
+                "stress; --start 1926-07 --proxy intl_equities=us_equities "
+                "--multiple-expansion 0)"
+            )
     shapes = list(shape_grid or [base.ladder_shape])
     ss_ages = list(ss_grid or [None])
     glides = list(glide_grid or [None])

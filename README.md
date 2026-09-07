@@ -497,6 +497,15 @@ shape = ["level", "spending"]         # TIPS payout profile
 social_security = [67, 70]            # claiming age (benefit adjusted 62-70)
 glide_to = ["static", 90]             # ending equity share of the liquid sleeve
 glide_years = 20                      # how long the drift takes
+# A glide search is REFUSED under an assumed P/E path. Every such path here
+# declines then recovers, and a rising-equity glide is underweight equities
+# during the assumed bad years and overweight during the good ones, so the
+# result measures the assumption. Run it valuation-agnostic instead:
+#   poorcast run --config plan.toml --start 1926-07 \
+#     --proxy intl_equities=us_equities --multiple-expansion 0
+# Against 1926-2026 with no valuation assumption the glide keeps its success
+# and tail benefit (+1.1 pts, +$0.8M at the 5th pct at matched average
+# equity) but loses its median-estate advantage entirely.
 tolerance = 2                 # success-rate points treated as a tie
 anchor = "stress"             # measure the band under the stress path
 stress = [{year = 0, pe = 30}, {year = 10, pe = 10}, {year = 40, pe = 25}]
