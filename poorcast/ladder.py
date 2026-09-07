@@ -405,6 +405,29 @@ def build_ladder_targets(
     return _build(np.asarray(targets, dtype=float), years, yields, taxable)
 
 
+def cost_weights(yields: np.ndarray) -> np.ndarray:
+    """v such that a ladder meeting target vector t costs exactly v @ t.
+
+    Building the rungs is a linear map (a lower-triangular back-substitution),
+    so its cost is a linear functional of the target. This is that functional,
+    and it is exact wherever no face has to clamp at zero - which is any
+    target the ladder must actually fund in every year. A partial-horizon
+    target does clamp, because the years before its first maturity are
+    already covered by later rungs' coupons, and there v @ t understates the
+    true cost; build those with build_ladder_targets instead.
+    """
+    n = len(yields)
+    v = np.empty(n)
+    for j in range(n):
+        f = np.zeros(n)
+        for y in range(j, -1, -1):
+            f[y] = ((1.0 if y == j else 0.0) - (yields[y + 1:] * f[y + 1:]).sum()) / (
+                1.0 + yields[y]
+            )
+        v[j] = f.sum()
+    return v
+
+
 def maturity_split(
     total_budget: float, deferred_budget: float, years: int, curve,
     first_year: int, tail_yield: float | None = None,
@@ -440,6 +463,14 @@ def maturity_split(
         raise ValueError("shape must be `years` non-negative multipliers")
 
     def cost_of(t):
+        # A target vector of all zeros is a ladder with no rungs, which costs
+        # nothing. It arises transiently inside the solve below: at a trial
+        # floor low enough that the deferred account's coupons already cover
+        # it, the taxable side has nothing left to buy. Treating that as an
+        # error would abort the search before it reaches the floor that
+        # spends both budgets.
+        if np.max(np.asarray(t, dtype=float)) <= 0:
+            return 0.0
         return build_ladder_targets(t, years, curve, tail_yield=tail_yield).cost
 
     def profile(annual):
@@ -478,8 +509,33 @@ def maturity_split(
         taxable = np.maximum(level - d_spec.payout_real(), 0.0)
         return deferred, taxable
 
-    # Cost is linear in `annual` for a fixed deferred budget only while the
-    # deferred side is budget-bound, so solve rather than scale.
+    # Solve for the household floor algebraically rather than by bisection.
+    # While the deferred side is budget-bound its target does not depend on
+    # the floor at all: thinning the window by budget/cost cancels the scale.
+    # Its payouts are therefore fixed, the taxable side is what the floor
+    # leaves over, and the cost of that is a linear functional (cost_weights),
+    # so one division gives the floor that spends both budgets exactly.
+    yields = _curve_yields(years, curve, tail_yield) if isinstance(curve, dict) \
+        else np.full(years, float(curve))
+    v = cost_weights(yields)
+    win = np.zeros(years)
+    win[first_year - 1:] = prof[first_year - 1:]
+    win_cost = cost_of(win)
+    if win_cost > 0:
+        a_crit = deferred_budget / win_cost      # floor above which d is fixed
+        d_fixed = win * (deferred_budget / win_cost)
+        d_pay = build_ladder_targets(
+            d_fixed, years, curve, tail_yield=tail_yield
+        ).payout_real()
+        denom = float(v @ prof)
+        if denom > 0:
+            annual = (total_budget - deferred_budget + float(v @ d_pay)) / denom
+            taxable = annual * prof - d_pay
+            if annual >= a_crit and taxable.min() >= -1e-9:
+                return annual, d_fixed, np.maximum(taxable, 0.0)
+
+    # Fallback: the deferred budget covers more than its window, so its target
+    # moves with the floor and the relationship is no longer one division.
     def total_cost(annual):
         d, t = profile(annual)
         return cost_of(d) + cost_of(t)

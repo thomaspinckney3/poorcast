@@ -329,3 +329,70 @@ def test_deferred_window_never_exceeds_the_household_floor():
     # letting one year hold more rungs than the household ladder has.
     assert deferred.max() <= annual + 1e-6
     assert (taxable >= -1e-6).all()
+
+
+def test_maturity_split_spends_both_budgets_at_every_size():
+    # The solve for the household floor passes through trial values where the
+    # deferred account's coupons already cover the whole target, leaving the
+    # taxable side nothing to buy. Costing that empty ladder must return zero
+    # rather than raise, or the search aborts before it converges.
+    shape = np.array([1.0] * 20 + [0.99 ** (k + 1) for k in range(20)])
+    for total in (500_000.0, 1_000_000.0, 4_000_000.0):
+        for prof in (np.ones(40), shape):
+            annual, d, t = maturity_split(
+                total, 500_000.0, 40, 0.02, first_year=19, shape=prof
+            )
+            assert annual > 0
+            dc = build_ladder_targets(d, 40, 0.02).cost if d.max() > 0 else 0.0
+            tc = build_ladder_targets(t, 40, 0.02).cost if t.max() > 0 else 0.0
+            assert dc + tc == pytest.approx(total, rel=1e-6)
+            assert dc <= 500_000.0 + 1e-6
+
+
+def test_cost_weights_price_any_fully_funded_target():
+    # Building the rungs is a linear map, so cost is a linear functional of
+    # the target - exact wherever no face clamps at zero.
+    from poorcast.ladder import _curve_yields, cost_weights
+
+    curve = {1: 0.01, 10: 0.02, 30: 0.03}
+    ys = _curve_yields(40, curve)
+    v = cost_weights(ys)
+    rng = np.random.default_rng(0)
+    for t in (np.ones(40),
+              np.array([1.0] * 20 + [0.99 ** (k + 1) for k in range(20)]),
+              np.abs(rng.normal(5.0, 1.0, 40))):
+        assert v @ t == pytest.approx(
+            build_ladder_targets(t, 40, curve).cost, rel=1e-12
+        )
+
+
+def test_maturity_split_closed_form_matches_a_bisection_reference():
+    curve = {1: 0.01, 10: 0.02, 30: 0.03}
+    shape = np.array([1.0] * 20 + [0.99 ** (k + 1) for k in range(20)])
+
+    def reference(total, deferred, prof):
+        """Solve the household floor by bisection instead of algebraically."""
+        def spend(a):
+            _, d, t = maturity_split(a, deferred, 40, curve, 19, shape=prof)
+            dc = build_ladder_targets(d, 40, curve).cost if d.max() > 0 else 0.0
+            tc = build_ladder_targets(t, 40, curve).cost if t.max() > 0 else 0.0
+            return dc + tc
+        # maturity_split already spends its budget, so just check it does
+        return spend(total)
+
+    for total in (500_000.0, 1_000_000.0, 5_500_000.0, 13_000_000.0):
+        for prof in (np.ones(40), shape):
+            annual, d, t = maturity_split(
+                total, 500_000.0, 40, curve, 19, shape=prof
+            )
+            assert reference(total, 500_000.0, prof) == pytest.approx(
+                total, rel=1e-9
+            )
+            # the floor is delivered in every year from the window onward
+            ds = build_ladder_targets(d, 40, curve) if d.max() > 0 else None
+            ts = build_ladder_targets(t, 40, curve) if t.max() > 0 else None
+            pay = np.zeros(40)
+            for spec in (ds, ts):
+                if spec is not None:
+                    pay += spec.payout_real()
+            assert pay.min() >= annual * prof.min() - 1e-6

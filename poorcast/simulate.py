@@ -651,6 +651,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             cost = wl * s.balance
             tax_flag = kinds[i] == "taxable"
             if i in placed:
+                if float(np.max(placed[i])) <= 0:
+                    continue  # the whole ladder fits in the other account
                 spec = build_ladder_targets(
                     placed[i], lyears, cfg.ladder_curve or cfg.ladder_yield,
                     taxable=tax_flag, tail_yield=cfg.ladder_tail_yield,
