@@ -408,6 +408,7 @@ def build_ladder_targets(
 def maturity_split(
     total_budget: float, deferred_budget: float, years: int, curve,
     first_year: int, tail_yield: float | None = None,
+    shape: "np.ndarray | None" = None,
 ) -> tuple[float, np.ndarray, np.ndarray]:
     """Split a household ladder between a tax-deferred account and a taxable
     one, giving the deferred account the LONGEST rungs it can safely hold.
@@ -434,14 +435,18 @@ def maturity_split(
     if total_budget <= 0:
         raise ValueError("total_budget must be positive")
     deferred_budget = max(min(deferred_budget, total_budget), 0.0)
+    prof = np.ones(years) if shape is None else np.asarray(shape, dtype=float)
+    if len(prof) != years or prof.min() < 0:
+        raise ValueError("shape must be `years` non-negative multipliers")
 
     def cost_of(t):
         return build_ladder_targets(t, years, curve, tail_yield=tail_yield).cost
 
     def profile(annual):
         """Deferred and taxable targets for a household floor of `annual`."""
+        level = annual * prof
         window = np.zeros(years)
-        window[first_year - 1:] = annual
+        window[first_year - 1:] = level[first_year - 1:]
         full = cost_of(window)
         if deferred_budget <= full:
             deferred = window * (deferred_budget / full) if full > 0 else window
@@ -449,19 +454,19 @@ def maturity_split(
             lo = first_year
             while lo > 1:
                 trial = np.zeros(years)
-                trial[lo - 2:] = annual
+                trial[lo - 2:] = level[lo - 2:]
                 if cost_of(trial) > deferred_budget:
                     break
                 lo -= 1
             deferred = np.zeros(years)
-            deferred[lo - 1:] = annual
+            deferred[lo - 1:] = level[lo - 1:]
             if lo > 1:
                 used = cost_of(deferred)
                 step = np.zeros(years)
-                step[lo - 2] = annual
+                step[lo - 2] = level[lo - 2]
                 extra = cost_of(deferred + step) - used
                 if extra > 0:
-                    deferred[lo - 2] = annual * min(
+                    deferred[lo - 2] = level[lo - 2] * min(
                         (deferred_budget - used) / extra, 1.0
                     )
         # The deferred account's long rungs pay coupons in the years before
@@ -470,7 +475,7 @@ def maturity_split(
         d_spec = build_ladder_targets(
             deferred, years, curve, tail_yield=tail_yield
         )
-        taxable = np.maximum(np.full(years, float(annual)) - d_spec.payout_real(), 0.0)
+        taxable = np.maximum(level - d_spec.payout_real(), 0.0)
         return deferred, taxable
 
     # Cost is linear in `annual` for a fixed deferred budget only while the
@@ -479,7 +484,7 @@ def maturity_split(
         d, t = profile(annual)
         return cost_of(d) + cost_of(t)
 
-    lo, hi = 0.0, total_budget / max(cost_of(np.ones(years)), 1e-12)
+    lo, hi = 0.0, total_budget / max(cost_of(prof), 1e-12)
     while total_cost(hi) < total_budget:
         hi *= 1.5
     for _ in range(60):

@@ -389,6 +389,16 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "5/7/10/20/30y, interpolated) instead of a flat --tips-ladder-yield",
     )
     r.add_argument(
+        "--ladder-shape",
+        dest="ladder_shape",
+        choices=("level", "spending"),
+        default=None,
+        help="TIPS rung payout profile. level (default): the same real income "
+        "every year. spending: flat until the age decline starts then shrinking "
+        "with it, so the rungs hedge the floor the withdrawal rule actually "
+        "needs rather than over-insuring the late years",
+    )
+    r.add_argument(
         "--ladder-deferred-from",
         dest="ladder_deferred_from_age",
         type=int,
@@ -1161,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
                 else args.tips_ladder_tail / 100.0
             ),
             ladder_placement=getattr(args, "ladder_placement", None) or "prorata",
+            ladder_shape=getattr(args, "ladder_shape", None) or "level",
             ladder_deferred_from_age=getattr(
                 args, "ladder_deferred_from_age", None
             ),
@@ -1211,7 +1222,10 @@ def main(argv: list[str] | None = None) -> int:
                 while x <= hi + st * 1e-9:
                     L_vals.append(x)
                     x += st
-            n_cand = len(e_vals or [1]) * len(L_vals or [1])
+            n_cand = (len(e_vals or [1]) * len(L_vals or [1])
+                      * len(getattr(args, 'optimize_shape', None) or [1])
+                      * len(getattr(args, 'optimize_ss', None) or [1])
+                      * len(getattr(args, 'optimize_glide', None) or [1]))
             stress_cfg = None
             if stress_points is not None:
                 sf = scenario_fields(stress_points)
@@ -1227,6 +1241,10 @@ def main(argv: list[str] | None = None) -> int:
                 panel, cfg, e_vals, L_vals, progress=lambda s: print(s, flush=True),
                 stress=stress_cfg, success_tolerance=opt_tol / 100.0,
                 anchor=opt_anchor, return_screen=True,
+                shape_grid=getattr(args, "optimize_shape", None),
+                ss_grid=getattr(args, "optimize_ss", None),
+                glide_grid=getattr(args, "optimize_glide", None),
+                glide_years=getattr(args, "optimize_glide_years", None),
             )
             has_stress = stress_cfg is not None
             print("\nRefined candidates (success mean ± sd across seeds"
@@ -1252,11 +1270,11 @@ def main(argv: list[str] | None = None) -> int:
                         line += f", stress {row['stress_success']:.1%}"
                     line += f", estate ${row['median'] / 1e6:.1f}M, floor ${row['floor']:,.0f}/yr"
                     print(line)
-                chosen = next(r["label"] for r in board if r["accounts"] == best)
+                chosen = next(r["label"] for r in board if r["overrides"] == best)
                 print(f"Selected at {opt_tol:g} pt{'s' if opt_tol != 1 else ''}: {chosen}")
             else:
                 print(f"Selected: {board[0]['label']}")
-            cfg = replace(cfg, accounts=best)
+            cfg = replace(cfg, **best)
         elif args.optimize:
             from dataclasses import replace
 

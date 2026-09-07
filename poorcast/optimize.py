@@ -177,6 +177,59 @@ def household_bucket_templates(accounts, base_alloc) -> tuple[dict, dict]:
     return _norm(agg_eq), _norm(agg_de)
 
 
+# Social Security actuarial adjustment. Benefits rise 8%/yr for each year
+# claimed after full retirement age (to 70) and fall 6.667%/yr for the first
+# three years before it, 5%/yr beyond. `base` is the benefit AT full
+# retirement age, which is how [[income]] states it.
+def ss_factor(claim_age: int, fra: int = 67) -> float:
+    if claim_age >= fra:
+        return 1.0 + 0.08 * min(claim_age - fra, 70 - fra)
+    early = fra - claim_age
+    return 1.0 - (0.0666667 * min(early, 3) + 0.05 * max(early - 3, 0))
+
+
+def ss_streams(streams, claim_age: int, start_age: int, fra: int = 67):
+    """Re-time and re-size the FIRST income stream for a claiming age."""
+    from .simulate import IncomeStream
+
+    if not streams:
+        return streams
+    head, rest = streams[0], streams[1:]
+    base = head.annual / ss_factor(_stream_age(head, start_age), fra)
+    return (
+        IncomeStream(
+            base * ss_factor(claim_age, fra),
+            start_month=max((claim_age - start_age) * 12, 0),
+            taxable=getattr(head, "taxable", False),
+        ),
+    ) + rest
+
+
+def _stream_age(stream, start_age: int) -> int:
+    return start_age + stream.start_month // 12
+
+
+def apply_glide(accounts, end_equity: float, base_alloc):
+    """Give every non-529 account an allocation_end at `end_equity` equities,
+    preserving its own intra-bucket proportions and its ladder weight."""
+    from dataclasses import replace as _replace
+
+    agg_eq, agg_de = household_bucket_templates(accounts, base_alloc)
+    out = []
+    for a in accounts:
+        alloc = a.allocation or base_alloc or {}
+        wl = float(alloc.get(LADDER, 0.0))
+        liquid = {k: v for k, v in alloc.items() if k != LADDER}
+        if wl >= 1.0 or not liquid:
+            out.append(a)
+            continue
+        # allocation_end covers the LIQUID sleeve only: the ladder share is
+        # fixed at purchase and is never rebalanced, so it must not appear.
+        end = rescale_equity(liquid, end_equity, agg_eq, agg_de)
+        out.append(a if a.kind == "529" else _replace(a, allocation_end=end))
+    return tuple(out)
+
+
 def household_candidate(accounts, base_alloc, equity: float, ladder_total: float):
     """Rebuild the accounts for a household equity share and total ladder cost.
 
@@ -254,6 +307,10 @@ def optimize_household(
     base,
     equity_grid=None,
     ladder_grid=None,
+    shape_grid=None,
+    ss_grid=None,
+    glide_grid=None,
+    glide_years=None,
     screen_sims: int = 4000,
     refine_seeds: tuple[int, ...] = (42, 7, 123),
     top_k: int = 5,
@@ -328,32 +385,66 @@ def optimize_household(
         }
 
     def score(cand, sims, seed):
-        s = stats(simulate(panel, replace(base, accounts=cand, n_sims=sims, seed=seed)))
+        s = stats(simulate(panel, replace(base, **cand, n_sims=sims, seed=seed)))
         if stress is not None:
-            r = simulate(panel, replace(stress, accounts=cand, n_sims=sims, seed=seed))
+            r = simulate(panel, replace(stress, **cand, n_sims=sims, seed=seed))
             s["stress_success"] = r.success_rate
         return s
 
+    if glide_grid and any(g is not None for g in glide_grid):
+        if not (glide_years or base.glide_years):
+            raise ValueError(
+                "a glide search needs glide_years (how long the drift takes)"
+            )
+    shapes = list(shape_grid or [base.ladder_shape])
+    ss_ages = list(ss_grid or [None])
+    glides = list(glide_grid or [None])
     rows = []
     seen = set()
     for L in ladder_grid:
         actual = min(L, capacity)
         clipped = "" if actual >= L else f" (clipped from ${L / 1e6:g}M)"
         for e in equity_grid:
-            key = (round(actual, 6), round(e, 9))
-            if key in seen:
-                continue  # a clipped duplicate of an already-screened candidate
-            seen.add(key)
-            cand = household_candidate(accounts, base.allocation, e, actual)
-            s = score(cand, screen_sims, screen_seed)
-            row = {"label": f"ladder ${actual / 1e6:g}M · equity {e:.0%}{clipped}",
-                   "accounts": cand, **s, "success_sd": 0.0}
-            rows.append(row)
-            if progress:
-                extra = (f", stress {s['stress_success']:.1%}"
-                         if "stress_success" in s else "")
-                progress(f"  {row['label']}: success {s['success']:.1%}{extra}, "
-                         f"p5 ${s['p5'] / 1e6:.2f}M, median ${s['median'] / 1e6:.1f}M")
+            for sh in shapes:
+                for ss in ss_ages:
+                    for gl in glides:
+                        key = (round(actual, 6), round(e, 9), sh, ss, gl)
+                        if key in seen:
+                            continue  # a clipped duplicate already screened
+                        seen.add(key)
+                        cand = household_candidate(
+                            accounts, base.allocation, e, actual
+                        )
+                        if gl is not None:
+                            cand = apply_glide(cand, gl, base.allocation)
+                        over = {"accounts": cand, "ladder_shape": sh}
+                        if gl is not None:
+                            over["glide_years"] = glide_years or base.glide_years
+                        if ss is not None:
+                            over["income"] = ss_streams(
+                                base.income or (), ss, base.age
+                            )
+                        label = f"ladder ${actual / 1e6:g}M · equity {e:.0%}"
+                        if len(shapes) > 1:
+                            label += f" · {sh}"
+                        if len(ss_ages) > 1:
+                            label += f" · SS@{ss}"
+                        if len(glides) > 1:
+                            label += (
+                                " · static" if gl is None else f" · glide→{gl:.0%}"
+                            )
+                        s = score(over, screen_sims, screen_seed)
+                        row = {"label": label + clipped, "overrides": over,
+                               **s, "success_sd": 0.0}
+                        rows.append(row)
+                        if progress:
+                            extra = (f", stress {s['stress_success']:.1%}"
+                                     if "stress_success" in s else "")
+                            progress(
+                                f"  {row['label']}: success {s['success']:.1%}"
+                                f"{extra}, p5 ${s['p5'] / 1e6:.2f}M, "
+                                f"median ${s['median'] / 1e6:.1f}M"
+                            )
     rows.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
 
     if success_tolerance > 0:
@@ -372,10 +463,10 @@ def optimize_household(
 
     refined = []
     for row in chosen:
-        runs = [score(row["accounts"], base.n_sims, seed) for seed in refine_seeds]
+        runs = [score(row["overrides"], base.n_sims, seed) for seed in refine_seeds]
         succ = [r["success"] for r in runs]
         out = {
-            "label": row["label"], "accounts": row["accounts"], "floor": row["floor"],
+            "label": row["label"], "overrides": row["overrides"], "floor": row["floor"],
             "success": float(np.mean(succ)),
             "success_sd": float(np.std(succ, ddof=1)) if len(succ) > 1 else 0.0,
             "p5": float(np.mean([r["p5"] for r in runs])),
@@ -392,5 +483,5 @@ def optimize_household(
     else:
         best = refined[0]
     if return_screen:
-        return best["accounts"], refined, rows
-    return best["accounts"], refined
+        return best["overrides"], refined, rows
+    return best["overrides"], refined

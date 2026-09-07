@@ -159,6 +159,12 @@ class SimConfig:
     # horizon. "maturity": the household buys ONE ladder and the rungs are
     # assigned by maturity, the tax-deferred account taking the longest it
     # can hold without an RMD forcing an early sale (see ladder.maturity_split).
+    # Ladder payout profile. "level" (default): the same real income every
+    # year. "spending": the profile the withdrawal rule actually needs,
+    # flat until the age decline starts and shrinking with it after, so
+    # the rungs hedge the floor they are bought for instead of
+    # over-insuring the late years.
+    ladder_shape: str = "level"
     ladder_placement: str = "prorata"
     # ladder_placement="maturity": the age at which the tax-deferred
     # account's rung window opens. None = the RMD age, the latest start
@@ -371,6 +377,37 @@ def _slot_weights(
     return W
 
 
+# One-entry cache of the sampled month indices and the history they gather.
+# Scoring a candidate in a base and a stress world runs the same seed over the
+# same window twice, and an optimizer grid does that hundreds of times: the
+# months and the raw returns/inflation/income they pull out are identical
+# every time, and only the per-scenario return adjustment differs. Those
+# arrays are read-only downstream (the adjustment rebinds rather than mutates)
+# so they are safe to share. Held one deep because each entry is hundreds of
+# megabytes; a differing key simply replaces it.
+_SAMPLE_CACHE: dict = {}
+
+
+def _sample_cache_key(cfg, window, assets, slot_weights, returns_hist, inflation_hist):
+    # Key on the history's CONTENT, not on the panel object: id() is reused
+    # after garbage collection, which would silently serve one panel's sample
+    # for another's. The window is a few hundred rows, so hashing is cheap.
+    w = None
+    if slot_weights is not None:
+        w = (slot_weights.shape, hash(slot_weights.tobytes()))
+    return (
+        cfg.seed, cfg.n_sims, cfg.years, cfg.block_months, cfg.mode,
+        str(window[0]), str(window[-1]), len(window), tuple(assets), w,
+        hash(np.ascontiguousarray(returns_hist).tobytes()),
+        hash(np.ascontiguousarray(inflation_hist).tobytes()),
+    )
+
+
+def clear_sample_cache() -> None:
+    """Drop the cached sample. Only needed if a panel is mutated in place."""
+    _SAMPLE_CACHE.clear()
+
+
 def _sample_months(
     cfg: SimConfig,
     t_hist: int,
@@ -579,7 +616,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     ladder_annual_total = 0.0
     ladder_payout_total: "np.ndarray | None" = None
     if has_ladder_alloc:
-        from .ladder import build_ladder, build_ladder_curve
+        from .ladder import build_ladder_targets
 
         if cfg.ladder_years is not None and cfg.ladder_years < 1:
             raise ValueError(f"ladder_years must be >= 1, got {cfg.ladder_years}")
@@ -589,6 +626,22 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 f"ladder_placement must be prorata/maturity, got "
                 f"{cfg.ladder_placement!r}"
             )
+        if cfg.ladder_shape not in ("level", "spending"):
+            raise ValueError(
+                f"ladder_shape must be level/spending, got {cfg.ladder_shape!r}"
+            )
+        shape = np.ones(lyears)
+        if cfg.ladder_shape == "spending":
+            _w = cfg.withdrawal
+            if _w is None or _w.kind != "fixed_real" or _w.decline <= 0:
+                raise ValueError(
+                    "ladder_shape='spending' needs a fixed-real withdrawal with "
+                    "a spending decline to follow"
+                )
+            d0 = _w.decline_start_month // 12
+            for t in range(lyears):
+                if t >= d0:
+                    shape[t] = (1.0 - _w.decline) ** (t - d0 + 1)
         placed: dict[int, np.ndarray] = {}
         if cfg.ladder_placement == "maturity":
             from .ladder import build_ladder_targets, maturity_split
@@ -616,7 +669,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             curve_or_y = cfg.ladder_curve or cfg.ladder_yield
             _, d_t, t_t = maturity_split(
                 total_b, budgets[trad_j], lyears, curve_or_y, first,
-                tail_yield=cfg.ladder_tail_yield,
+                tail_yield=cfg.ladder_tail_yield, shape=shape,
             )
             placed = {trad_j: d_t, tax_j: t_t}
         for i, (s, wl) in enumerate(zip(specs, lad_w)):
@@ -631,20 +684,15 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 )
                 acct_ladders[i] = spec
                 continue
-            if cfg.ladder_curve:
-                unit = build_ladder_curve(
-                    1.0, lyears, cfg.ladder_curve, taxable=tax_flag,
-                    tail_yield=cfg.ladder_tail_yield,
-                )
-                spec = build_ladder_curve(
-                    cost / unit.cost, lyears, cfg.ladder_curve, taxable=tax_flag,
-                    tail_yield=cfg.ladder_tail_yield,
-                )
-            else:
-                unit = build_ladder(1.0, lyears, cfg.ladder_yield, taxable=tax_flag)
-                spec = build_ladder(
-                    cost / unit.cost, lyears, cfg.ladder_yield, taxable=tax_flag
-                )
+            curve_or_y = cfg.ladder_curve or cfg.ladder_yield
+            unit = build_ladder_targets(
+                shape, lyears, curve_or_y, taxable=tax_flag,
+                tail_yield=cfg.ladder_tail_yield,
+            )
+            spec = build_ladder_targets(
+                shape * (cost / unit.cost), lyears, curve_or_y, taxable=tax_flag,
+                tail_yield=cfg.ladder_tail_yield,
+            )
             acct_ladders[i] = spec
 
         # The household floor is the minimum of the COMBINED payout profile:
@@ -757,7 +805,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         block = max(1, min(cfg.block_months, len(window)))
         n_blocks = -(-(cfg.years * 12) // block)
         W = _slot_weights(state_log, path_log, block, n_blocks, cfg.state_bandwidth)
-    months = _sample_months(cfg, len(window), rng, slot_weights=W)
+    _key = _sample_cache_key(
+        cfg, window, assets, W, returns_hist, inflation_hist
+    )
+    _hit = _SAMPLE_CACHE.get(_key)
+    if _hit is None:
+        months = _sample_months(cfg, len(window), rng, slot_weights=W)
+    else:
+        months = _hit[0]
     n_paths, n_months = months.shape
 
     # State-conditioned drift re-centering: replace each block's conditional
@@ -779,7 +834,14 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
 
     if not 0 <= cfg.fee_annual < 0.1:
         raise ValueError(f"fee_annual must be in [0, 0.1), got {cfg.fee_annual}")
-    path_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
+    if _hit is None:
+        raw_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
+        raw_inflation = inflation_hist[months]  # (n_paths, n_months)
+        _SAMPLE_CACHE.clear()
+        _SAMPLE_CACHE[_key] = (months, raw_returns, raw_inflation)
+    else:
+        _, raw_returns, raw_inflation = _hit
+    path_returns = raw_returns
     if eff_adj or cfg.fee_annual:
         vals = [eff_adj.get(a, 0.0) for a in assets]
         if any(np.ndim(v) > 0 for v in vals):
@@ -797,7 +859,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         else:
             adj = np.array(vals)
             path_returns = path_returns + (adj - cfg.fee_annual)[None, None, :] / 12.0
-    path_inflation = inflation_hist[months]  # (n_paths, n_months)
+    path_inflation = raw_inflation
     e5 = min(60, n_months)
     early_real_market = (
         np.log1p(path_returns[:, :e5, :] @ weights) - np.log1p(path_inflation[:, :e5])

@@ -490,6 +490,10 @@ world.
 [optimize]
 equity = [40, 80, 20]
 ladder = [0, 12_000_000, 1_000_000]
+shape = ["level", "spending"]         # TIPS payout profile
+social_security = [67, 70]            # claiming age (benefit adjusted 62-70)
+glide_to = ["static", 90]             # ending equity share of the liquid sleeve
+glide_years = 20                      # how long the drift takes
 tolerance = 2                 # success-rate points treated as a tie
 anchor = "stress"             # measure the band under the stress path
 stress = [{year = 0, pe = 30}, {year = 10, pe = 10}, {year = 40, pe = 25}]

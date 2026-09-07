@@ -82,7 +82,9 @@ def test_optimize_household_search_runs():
     )
     assert len(board) == 2
     assert board[0]["success"] >= board[1]["success"] - 1e-9
-    assert isinstance(best, tuple) and len(best) == 2
+    # `best` is a set of SimConfig overrides, always carrying accounts
+    assert isinstance(best, dict) and isinstance(best["accounts"], tuple)
+    assert len(best["accounts"]) == 2
 
 
 # --- audit fixes -------------------------------------------------------------
@@ -228,7 +230,7 @@ def test_optimize_household_tolerance_prefers_estate_within_band():
         panel, base, success_tolerance=0.5, return_screen=True, **kw)
     assert len(screened) == 4
     strict_row = max(strict_board, key=lambda r: (r["success"], r["p5"], r["median"]))
-    loose_row = next(r for r in loose_board if r["accounts"] == loose_best)
+    loose_row = next(r for r in loose_board if r["overrides"] == loose_best)
     # a 50-point band ties everything, so the loose pick is the max-estate
     # candidate, which never beats the strict pick on success
     assert loose_row["median"] == max(r["median"] for r in loose_board)
@@ -253,3 +255,89 @@ def test_optimize_household_scores_a_stress_world():
         screen_sims=200, refine_seeds=(1,), top_k=2, stress=stress,
         success_tolerance=0.02, anchor="stress")
     assert all("stress_success" in r and r["stress_success"] <= r["success"] + 1e-9 for r in board)
+
+
+# --- extra search dimensions --------------------------------------------------
+
+
+def test_ss_factor_matches_the_statutory_table():
+    from poorcast.optimize import ss_factor
+
+    assert ss_factor(67) == pytest.approx(1.00)
+    assert ss_factor(70) == pytest.approx(1.24)
+    assert ss_factor(62) == pytest.approx(0.70, abs=1e-3)
+    assert ss_factor(64) == pytest.approx(0.80, abs=1e-3)
+    # credits stop accruing after 70
+    assert ss_factor(72) == pytest.approx(ss_factor(70))
+
+
+def test_ss_streams_retimes_and_resizes_the_benefit():
+    from poorcast.optimize import ss_streams
+    from poorcast.simulate import IncomeStream
+
+    at67 = (IncomeStream(50_000.0, start_month=(67 - 55) * 12),)
+    at70 = ss_streams(at67, 70, start_age=55)
+    assert at70[0].start_month == (70 - 55) * 12
+    assert at70[0].annual == pytest.approx(50_000 * 1.24)
+    # round-tripping back to 67 restores the original benefit
+    back = ss_streams(at70, 67, start_age=55)
+    assert back[0].annual == pytest.approx(50_000.0)
+
+
+def test_apply_glide_sets_an_end_allocation_and_keeps_the_ladder():
+    from poorcast.optimize import apply_glide, household_candidate
+
+    cand = household_candidate(BASE, None, equity=0.5, ladder_total=500_000.0)
+    glided = apply_glide(cand, 0.9, None)
+    for a in glided:
+        if a.kind == "529":
+            assert a.allocation_end is None
+            continue
+        if (a.allocation or {}).get("tips_ladder", 0.0) >= 1.0:
+            continue
+        assert a.allocation_end is not None
+        # allocation_end covers the liquid sleeve only: the ladder share is
+        # fixed at purchase, so it must not appear and the rest sums to 1
+        assert "tips_ladder" not in a.allocation_end
+        assert sum(a.allocation_end.values()) == pytest.approx(1.0)
+
+
+def test_extra_dimensions_multiply_the_candidate_grid():
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    rng = np.random.default_rng(11)
+    panel = pd.DataFrame({
+        "us_equities": rng.normal(0.005, 0.03, 480),
+        "cash": np.full(480, 0.002), "inflation": np.zeros(480),
+    }, index=idx)
+    base = SimConfig(
+        accounts=(Account("taxable", 1_000_000.0,
+                          allocation={"us_equities": 0.7, "cash": 0.3}),),
+        years=5, age=55, n_sims=40, seed=3, ladder_yield=0.02,
+        withdrawal=Withdrawal("fixed_real", rate=0.04, decline=0.01,
+                              decline_start_month=24),
+    )
+    _, _, screened = optimize_household(
+        panel, base, equity_grid=[0.7], ladder_grid=[100_000.0],
+        shape_grid=["level", "spending"], ss_grid=[67, 70],
+        screen_sims=40, refine_seeds=(3,), top_k=2, return_screen=True,
+    )
+    assert len(screened) == 4  # 2 shapes x 2 claiming ages
+    assert any("spending" in r["label"] for r in screened)
+    assert any("SS@70" in r["label"] for r in screened)
+
+
+def test_glide_search_requires_glide_years():
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    panel = pd.DataFrame({
+        "us_equities": np.full(480, 0.005), "cash": np.full(480, 0.002),
+        "inflation": np.zeros(480),
+    }, index=idx)
+    base = SimConfig(
+        accounts=(Account("taxable", 1_000_000.0,
+                          allocation={"us_equities": 0.7, "cash": 0.3}),),
+        years=5, age=55, n_sims=20, seed=3,
+        withdrawal=Withdrawal("fixed_real", rate=0.04),
+    )
+    with pytest.raises(ValueError, match="glide_years"):
+        optimize_household(panel, base, equity_grid=[0.7], ladder_grid=[0.0],
+                           glide_grid=[0.9], screen_sims=20, refine_seeds=(3,))

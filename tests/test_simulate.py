@@ -426,3 +426,52 @@ def test_proxies_extend_the_window_and_are_counted():
     assert len(r0.window) == n - 120 and r0.proxied is None
     with pytest.raises(ValueError, match="proxy"):
         simulate(panel, SimConfig(**base, proxies={"b": "zzz"}))
+
+
+# --- sampled-history cache ---------------------------------------------------
+
+
+def test_sample_cache_does_not_change_results():
+    from dataclasses import replace as _replace
+
+    from poorcast.simulate import clear_sample_cache
+
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    rng = np.random.default_rng(4)
+    panel = pd.DataFrame({
+        "us_equities": rng.normal(0.005, 0.03, 480),
+        "cash": np.full(480, 0.002), "inflation": np.full(480, 0.002),
+    }, index=idx)
+    cfg = SimConfig(allocation={"us_equities": 0.6, "cash": 0.4}, initial=1e6,
+                    years=10, n_sims=200, seed=7,
+                    withdrawal=Withdrawal("fixed_real", rate=0.04))
+    clear_sample_cache()
+    cold = simulate(panel, cfg)
+    warm = simulate(panel, cfg)            # served from the cache
+    assert np.array_equal(cold.months, warm.months)
+    assert np.allclose(cold.balance, warm.balance)
+    # a scenario differing only in its return adjustment reuses the same
+    # months but must still produce different balances
+    adj = simulate(panel, _replace(cfg, return_adjustments={"us_equities": -0.02}))
+    assert np.array_equal(adj.months, cold.months)
+    assert not np.allclose(adj.balance, cold.balance)
+
+
+def test_sample_cache_is_keyed_on_history_content():
+    # Two panels of identical shape but different values must not collide,
+    # even if the first is garbage-collected and the second reuses its id().
+    from poorcast.simulate import clear_sample_cache
+
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    cfg = SimConfig(allocation={"us_equities": 1.0}, initial=1e6, years=10,
+                    n_sims=100, seed=3)
+
+    def run(mu):
+        panel = pd.DataFrame({
+            "us_equities": np.full(480, mu), "inflation": np.zeros(480),
+        }, index=idx)
+        return simulate(panel, cfg).balance[:, -1].mean()
+
+    clear_sample_cache()
+    a, b = run(0.002), run(0.008)
+    assert b > a * 1.5          # the second panel's higher returns must show

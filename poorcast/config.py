@@ -164,7 +164,8 @@ TOP_KEYS = {
     "account", "withdraw_order", "adjustments", "pe_path",
     "pe_conditioned", "pe_bandwidth", "proxies",
 }
-OPTIMIZE_KEYS = {"equity", "ladder", "tolerance", "anchor", "stress"}
+OPTIMIZE_KEYS = {"equity", "ladder", "tolerance", "anchor", "stress",
+                 "shape", "social_security", "glide_to", "glide_years"}
 OPTIMIZE_GRID_KEYS = ("equity", "ladder")
 ACCOUNT_KINDS = ("taxable", "traditional", "roth", "529")
 
@@ -217,8 +218,48 @@ def load_config(path: str) -> dict:
                     if key == "equity" and hi > 100:
                         raise ConfigError("[optimize] equity is in percent (0-100)")
                     grid[key] = [lo, hi, st]
-            if not grid:
-                raise ConfigError("[optimize] needs an equity and/or ladder range")
+            if "shape" in o:
+                vals = o["shape"]
+                if not isinstance(vals, list) or not vals:
+                    raise ConfigError("[optimize] shape must be a list")
+                out["optimize_shape"] = [
+                    _str(v, "optimize.shape", ("level", "spending")) for v in vals
+                ]
+            if "social_security" in o:
+                vals = o["social_security"]
+                if not isinstance(vals, list) or not vals:
+                    raise ConfigError("[optimize] social_security must be a list")
+                ages = [int(_num(v, "optimize.social_security")) for v in vals]
+                if not all(62 <= a <= 70 for a in ages):
+                    raise ConfigError(
+                        "[optimize] social_security ages must be 62-70"
+                    )
+                out["optimize_ss"] = ages
+            if "glide_to" in o:
+                vals = o["glide_to"]
+                if not isinstance(vals, list) or not vals:
+                    raise ConfigError("[optimize] glide_to must be a list")
+                ends = []
+                for v in vals:
+                    if isinstance(v, str) and v == "static":
+                        ends.append(None)
+                        continue
+                    e = _num(v, "optimize.glide_to")
+                    if not 0 <= e <= 100:
+                        raise ConfigError("[optimize] glide_to is a percent (0-100)")
+                    ends.append(e / 100.0)
+                out["optimize_glide"] = ends
+            if "glide_years" in o:
+                out["optimize_glide_years"] = int(
+                    _num(o["glide_years"], "optimize.glide_years")
+                )
+            if not grid and not any(
+                k in o for k in ("shape", "social_security", "glide_to")
+            ):
+                raise ConfigError(
+                    "[optimize] needs an equity/ladder range or a shape, "
+                    "social_security or glide_to list"
+                )
             out["optimize_grid"] = grid
             out["optimize"] = True
         else:
@@ -407,12 +448,16 @@ def load_config(path: str) -> dict:
         _reject_unknown(
             lad,
             {"annual", "yield", "curve", "deferred", "years", "tail_yield",
-             "placement", "deferred_from"},
+             "placement", "deferred_from", "shape"},
             "[tips_ladder]",
         )
         if "placement" in lad:
             out["ladder_placement"] = _str(
                 lad["placement"], "tips_ladder.placement", ("prorata", "maturity")
+            )
+        if "shape" in lad:
+            out["ladder_shape"] = _str(
+                lad["shape"], "tips_ladder.shape", ("level", "spending")
             )
         if "deferred_from" in lad:
             out["ladder_deferred_from_age"] = int(
