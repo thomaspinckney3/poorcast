@@ -407,12 +407,16 @@ def load_config(path: str) -> dict:
         _reject_unknown(
             lad,
             {"annual", "yield", "curve", "deferred", "years", "tail_yield",
-             "placement"},
+             "placement", "deferred_from"},
             "[tips_ladder]",
         )
         if "placement" in lad:
             out["ladder_placement"] = _str(
                 lad["placement"], "tips_ladder.placement", ("prorata", "maturity")
+            )
+        if "deferred_from" in lad:
+            out["ladder_deferred_from_age"] = int(
+                _num(lad["deferred_from"], "tips_ladder.deferred_from")
             )
         if "tail_yield" in lad:
             out["tips_ladder_tail"] = _num(lad["tail_yield"], "tips_ladder.tail_yield")

@@ -382,6 +382,11 @@ placement = "maturity"      # one household ladder, rungs assigned by
                             # maturity, so this shelters more tax per dollar
                             # of tax-deferred space. Default "prorata" gives
                             # every account its own level ladder.
+deferred_from = 79          # optional: the age the deferred window opens
+                            # (default 73, the RMD age, the latest start
+                            # that still puts a maturity in every required-
+                            # distribution year). Later shelters more but
+                            # leaves distribution years unfunded by a rung.
 
 [[account]]
 type = "traditional"        # the 401k/IRA

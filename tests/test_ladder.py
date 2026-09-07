@@ -306,3 +306,26 @@ def test_maturity_split_moves_phantom_income_out_of_the_taxable_account():
 def test_maturity_split_rejects_a_window_outside_the_horizon():
     with pytest.raises(ValueError, match="first_year"):
         maturity_split(1_000_000.0, 200_000.0, 20, 0.02, first_year=25)
+
+
+def test_a_later_deferred_window_shelters_more_of_the_taxable_ladder():
+    # Pushing the deferred account's window later concentrates its budget in
+    # longer rungs, so fewer principal-years sit in the taxable account.
+    def taxable_exposure(first_year):
+        _, _, taxable = maturity_split(
+            2_000_000.0, 500_000.0, 40, 0.02, first_year=first_year
+        )
+        spec = build_ladder_targets(taxable, 40, 0.02, taxable=True)
+        return spec.remaining_principal_real().sum()
+
+    assert taxable_exposure(30) < taxable_exposure(19)
+
+
+def test_deferred_window_never_exceeds_the_household_floor():
+    annual, deferred, taxable = maturity_split(
+        2_000_000.0, 900_000.0, 40, 0.02, first_year=35
+    )
+    # A budget larger than the tail forces the window earlier rather than
+    # letting one year hold more rungs than the household ladder has.
+    assert deferred.max() <= annual + 1e-6
+    assert (taxable >= -1e-6).all()

@@ -389,6 +389,17 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "5/7/10/20/30y, interpolated) instead of a flat --tips-ladder-yield",
     )
     r.add_argument(
+        "--ladder-deferred-from",
+        dest="ladder_deferred_from_age",
+        type=int,
+        default=None,
+        metavar="AGE",
+        help="with --ladder-placement maturity: the age the tax-deferred "
+        "account's rung window opens (default: the RMD age, 73). Later "
+        "shelters more but leaves distribution years with no maturity to fund "
+        "them",
+    )
+    r.add_argument(
         "--ladder-placement",
         choices=("prorata", "maturity"),
         default=None,
@@ -1150,6 +1161,9 @@ def main(argv: list[str] | None = None) -> int:
                 else args.tips_ladder_tail / 100.0
             ),
             ladder_placement=getattr(args, "ladder_placement", None) or "prorata",
+            ladder_deferred_from_age=getattr(
+                args, "ladder_deferred_from_age", None
+            ),
             proxies=proxies,
             income=tuple(streams) or None,
             expenses=tuple(expenses) or None,

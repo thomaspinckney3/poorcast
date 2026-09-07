@@ -160,6 +160,12 @@ class SimConfig:
     # assigned by maturity, the tax-deferred account taking the longest it
     # can hold without an RMD forcing an early sale (see ladder.maturity_split).
     ladder_placement: str = "prorata"
+    # ladder_placement="maturity": the age at which the tax-deferred
+    # account's rung window opens. None = the RMD age, the latest start
+    # that still puts a maturity in every required-distribution year.
+    # Pushing it later shelters more principal-years but leaves the
+    # account with distribution years it cannot fund from a maturity.
+    ladder_deferred_from_age: int | None = None
     cost_basis_start: float = 1.0  # initial basis as fraction of starting value
     # Single-account equivalent of Account.equity_cost_basis.
     equity_cost_basis_start: float | None = None
@@ -600,7 +606,13 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 raise ValueError("ladder_placement='maturity' needs `age`")
             budgets = {j: lad_w[j] * sp.balance for j, sp in enumerate(specs)}
             total_b = sum(budgets.values())
-            first = min(max(RMD_START_AGE - cfg.age + 1, 1), lyears)
+            _from = cfg.ladder_deferred_from_age or RMD_START_AGE
+            if _from < cfg.age:
+                raise ValueError(
+                    f"ladder_deferred_from_age {_from} is before the "
+                    f"household's starting age {cfg.age}"
+                )
+            first = min(max(_from - cfg.age + 1, 1), lyears)
             curve_or_y = cfg.ladder_curve or cfg.ladder_yield
             _, d_t, t_t = maturity_split(
                 total_b, budgets[trad_j], lyears, curve_or_y, first,
