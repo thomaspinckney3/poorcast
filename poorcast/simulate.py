@@ -300,7 +300,11 @@ class SimResult:
     account_kinds: tuple[str, ...] | None = None
     account_terminal: np.ndarray | None = None
     # Total real income/yr of allocation-based TIPS ladders, None if none.
+    # `ladder_annual` is the guaranteed minimum across the horizon; with a
+    # spending-shaped profile the ladder starts higher and declines to it, so
+    # `ladder_annual_start` carries the first year's payout too.
     ladder_annual: float | None = None
+    ladder_annual_start: float | None = None
     # (n_paths,) real dollars of spending the household could not deliver
     # (liquid exhausted while a target remained). Ladder runs only.
     total_unmet_real: np.ndarray | None = None
@@ -587,6 +591,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     acct_lad_val: dict[int, np.ndarray] = {}
     lyears = 0
     ladder_annual_total = 0.0
+    ladder_annual_first = 0.0
     ladder_payout_total: "np.ndarray | None" = None
     if has_ladder_alloc:
         from .ladder import build_ladder_targets
@@ -681,6 +686,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 ladder_payout_total[: len(pay)] += pay
         if ladder_payout_total is not None:
             ladder_annual_total = float(ladder_payout_total.min())
+            ladder_annual_first = float(ladder_payout_total[0])
 
     # Per-month target weights: static, or a linear glide over glide_years
     # (single-account mode; each account in accounts mode holds its own
@@ -1539,6 +1545,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             else None
         ),
         ladder_annual=ladder_annual_total or None,
+        ladder_annual_start=ladder_annual_first or None,
         total_unmet_real=total_unmet_real if acct_ladders else None,
         proxied=proxied or None,
     )

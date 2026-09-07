@@ -4,6 +4,8 @@ Zero-yield ladders keep the arithmetic hand-computable: an N-year ladder at
 0% real costs N x annual and pays annual/yr with no coupons.
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -229,3 +231,22 @@ def test_unknown_ladder_placement_rejected():
     cfg = _household("longest")
     with pytest.raises(ValueError, match="ladder_placement"):
         simulate(panel, cfg)
+
+
+def test_a_shaped_ladder_reports_its_starting_payout_too():
+    # ladder_annual is the guaranteed minimum. With a spending-shaped profile
+    # the ladder starts higher and declines to it, and reporting only the
+    # minimum reads as though it paid that throughout.
+    panel = make_panel(20 * 12)
+    cfg = SimConfig(
+        accounts=(Account("taxable", 1_000_000.0,
+                          allocation={"tips_ladder": 0.5, "a": 0.5}),),
+        years=20, age=55, ladder_yield=0.0, ladder_shape="spending",
+        withdrawal=Withdrawal("fixed_real", amount=30_000.0, decline=0.01,
+                              decline_start_month=120),
+        n_sims=2, seed=0,
+    )
+    r = simulate(panel, cfg)
+    assert r.ladder_annual_start > r.ladder_annual
+    level = simulate(panel, replace(cfg, ladder_shape="level"))
+    assert level.ladder_annual_start == pytest.approx(level.ladder_annual)

@@ -411,10 +411,12 @@ def _describe(result: SimResult, wrap: bool = False) -> str:
             pricing += (
                 f", tail {'bridge-locked at 30y forwards' if cfg.ladder_tail_yield is None else f'rolled at {cfg.ladder_tail_yield:.2%}'}"
             )
-        wd += (
-            f" · TIPS rungs paying ${result.ladder_annual:,.0f}/yr "
-            f"({lyrs}y at {pricing})"
-        )
+        start = result.ladder_annual_start
+        if start is not None and start > result.ladder_annual * 1.005:
+            pays = (f"${start:,.0f}/yr falling to ${result.ladder_annual:,.0f}")
+        else:
+            pays = f"${result.ladder_annual:,.0f}/yr"
+        wd += f" · TIPS paying {pays} ({lyrs}y at {pricing})"
     kinds_present = (
         {a.kind for a in cfg.accounts} if cfg.accounts else {cfg.account}
     )
