@@ -154,6 +154,12 @@ class SimConfig:
     # or an advisor fee. Historical returns are index returns, so 0 models
     # free investing.
     fee_annual: float = 0.0
+    # Ladder placement across accounts. "prorata" (default): every account
+    # with a tips_ladder weight buys its own level ladder over the whole
+    # horizon. "maturity": the household buys ONE ladder and the rungs are
+    # assigned by maturity, the tax-deferred account taking the longest it
+    # can hold without an RMD forcing an early sale (see ladder.maturity_split).
+    ladder_placement: str = "prorata"
     cost_basis_start: float = 1.0  # initial basis as fraction of starting value
     # Single-account equivalent of Account.equity_cost_basis.
     equity_cost_basis_start: float | None = None
@@ -565,17 +571,54 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     acct_lad_val: dict[int, np.ndarray] = {}
     lyears = 0
     ladder_annual_total = 0.0
+    ladder_payout_total: "np.ndarray | None" = None
     if has_ladder_alloc:
         from .ladder import build_ladder, build_ladder_curve
 
         if cfg.ladder_years is not None and cfg.ladder_years < 1:
             raise ValueError(f"ladder_years must be >= 1, got {cfg.ladder_years}")
         lyears = cfg.ladder_years or cfg.years
+        if cfg.ladder_placement not in ("prorata", "maturity"):
+            raise ValueError(
+                f"ladder_placement must be prorata/maturity, got "
+                f"{cfg.ladder_placement!r}"
+            )
+        placed: dict[int, np.ndarray] = {}
+        if cfg.ladder_placement == "maturity":
+            from .ladder import build_ladder_targets, maturity_split
+            from .tax import RMD_START_AGE
+
+            tax_j = kinds.index("taxable") if "taxable" in kinds else None
+            trad_j = kinds.index("traditional") if "traditional" in kinds else None
+            if trad_j is None or tax_j is None or lad_w[trad_j] <= 0:
+                raise ValueError(
+                    "ladder_placement='maturity' needs a taxable and a "
+                    "traditional account, with a tips_ladder weight on the "
+                    "traditional one"
+                )
+            if cfg.age is None:
+                raise ValueError("ladder_placement='maturity' needs `age`")
+            budgets = {j: lad_w[j] * sp.balance for j, sp in enumerate(specs)}
+            total_b = sum(budgets.values())
+            first = min(max(RMD_START_AGE - cfg.age + 1, 1), lyears)
+            curve_or_y = cfg.ladder_curve or cfg.ladder_yield
+            _, d_t, t_t = maturity_split(
+                total_b, budgets[trad_j], lyears, curve_or_y, first,
+                tail_yield=cfg.ladder_tail_yield,
+            )
+            placed = {trad_j: d_t, tax_j: t_t}
         for i, (s, wl) in enumerate(zip(specs, lad_w)):
             if wl <= 0:
                 continue
             cost = wl * s.balance
             tax_flag = kinds[i] == "taxable"
+            if i in placed:
+                spec = build_ladder_targets(
+                    placed[i], lyears, cfg.ladder_curve or cfg.ladder_yield,
+                    taxable=tax_flag, tail_yield=cfg.ladder_tail_yield,
+                )
+                acct_ladders[i] = spec
+                continue
             if cfg.ladder_curve:
                 unit = build_ladder_curve(
                     1.0, lyears, cfg.ladder_curve, taxable=tax_flag,
@@ -591,7 +634,18 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                     cost / unit.cost, lyears, cfg.ladder_yield, taxable=tax_flag
                 )
             acct_ladders[i] = spec
-            ladder_annual_total += spec.annual
+
+        # The household floor is the minimum of the COMBINED payout profile:
+        # per-account minima can fall in different years, so summing them
+        # understates what the rungs actually guarantee together.
+        for lad in acct_ladders.values():
+            pay = lad.payout_real()
+            if ladder_payout_total is None:
+                ladder_payout_total = pay.copy()
+            else:
+                ladder_payout_total[: len(pay)] += pay
+        if ladder_payout_total is not None:
+            ladder_annual_total = float(ladder_payout_total.min())
 
     # Per-month target weights: static, or a linear glide over glide_years
     # (single-account mode; each account in accounts mode holds its own
@@ -781,7 +835,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     if acct_ladders:
         lm = min(lyears * 12, n_months)
         for lad in acct_ladders.values():
-            income_real_m[:lm] += lad.annual / 12.0
+            pay = lad.payout_real()
+            for t in range(min(lad.years, (lm + 11) // 12)):
+                income_real_m[t * 12 : min((t + 1) * 12, lm)] += pay[t] / 12.0
         lad_val_real = np.zeros(n_months + 1)
         for i, lad in acct_ladders.items():
             prin = np.asarray(lad.remaining_principal_real(), dtype=float)
@@ -1113,14 +1169,18 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         # a roth's consume contribution basis first for the early penalty.
         if acct_ladders and m < lyears * 12:
             if trad and trad_i in acct_ladders:
-                pay_t = acct_ladders[trad_i].annual / 12.0 * cum_inflation[:, m]
+                _p = acct_ladders[trad_i].payout_real()
+                pay_t = _p[min(m // 12, len(_p) - 1)] / 12.0 * cum_inflation[:, m]
                 dist_acc += pay_t
                 if pen_active and m < pen_cut:
                     penalty_acc += 0.10 * pay_t
             if pen_active and m < pen_cut:
                 for ri in roth_idx:
                     if ri in acct_ladders:
-                        pay_r = acct_ladders[ri].annual / 12.0 * cum_inflation[:, m]
+                        _p = acct_ladders[ri].payout_real()
+                        pay_r = (
+                            _p[min(m // 12, len(_p) - 1)] / 12.0 * cum_inflation[:, m]
+                        )
                         from_basis = np.minimum(pay_r, roth_basis[ri])
                         roth_basis[ri] = roth_basis[ri] - from_basis
                         penalty_acc += 0.10 * (pay_r - from_basis)

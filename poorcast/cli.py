@@ -389,6 +389,19 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "5/7/10/20/30y, interpolated) instead of a flat --tips-ladder-yield",
     )
     r.add_argument(
+        "--ladder-placement",
+        choices=("prorata", "maturity"),
+        default=None,
+        help="how a household's TIPS rungs are split across accounts. prorata "
+        "(default): every account with a tips_ladder weight buys its own level "
+        "ladder. maturity: one household ladder whose rungs are assigned by "
+        "maturity, the traditional account taking the longest it can hold "
+        "without an RMD forcing an early sale. Phantom income compounds with "
+        "maturity, so this shelters far more tax per dollar of tax-deferred "
+        "space; it costs a little floor, because the deferred account's long "
+        "rungs pay coupons in years where it holds no rung of its own",
+    )
+    r.add_argument(
         "--tips-ladder-tail",
         type=float,
         default=None,
@@ -1136,6 +1149,7 @@ def main(argv: list[str] | None = None) -> int:
                 None if args.tips_ladder_tail is None
                 else args.tips_ladder_tail / 100.0
             ),
+            ladder_placement=getattr(args, "ladder_placement", None) or "prorata",
             proxies=proxies,
             income=tuple(streams) or None,
             expenses=tuple(expenses) or None,

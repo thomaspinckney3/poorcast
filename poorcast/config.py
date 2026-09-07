@@ -406,9 +406,14 @@ def load_config(path: str) -> dict:
         lad = raw["tips_ladder"]
         _reject_unknown(
             lad,
-            {"annual", "yield", "curve", "deferred", "years", "tail_yield"},
+            {"annual", "yield", "curve", "deferred", "years", "tail_yield",
+             "placement"},
             "[tips_ladder]",
         )
+        if "placement" in lad:
+            out["ladder_placement"] = _str(
+                lad["placement"], "tips_ladder.placement", ("prorata", "maturity")
+            )
         if "tail_yield" in lad:
             out["tips_ladder_tail"] = _num(lad["tail_yield"], "tips_ladder.tail_yield")
         # `annual` sizes the external (income-targeted) ladder; without it the

@@ -374,6 +374,15 @@ equity_cost_basis = 0.5     # the equity sleeve is half unrealized gain;
                             # across every holding in the account.
 allocation = { us_equities = 60, muni_bonds = 35, cash = 5 }
 
+[tips_ladder]
+placement = "maturity"      # one household ladder, rungs assigned by
+                            # maturity: the traditional account takes the
+                            # longest it can hold without an RMD forcing an
+                            # early sale. Phantom income compounds with
+                            # maturity, so this shelters more tax per dollar
+                            # of tax-deferred space. Default "prorata" gives
+                            # every account its own level ladder.
+
 [[account]]
 type = "traditional"        # the 401k/IRA
 balance = 400_000

@@ -3,7 +3,12 @@
 import numpy as np
 import pytest
 
-from poorcast.ladder import build_ladder, rung_faces
+from poorcast.ladder import (
+    build_ladder,
+    build_ladder_targets,
+    maturity_split,
+    rung_faces,
+)
 
 
 def test_zero_yield_ladder_costs_face_value():
@@ -246,3 +251,58 @@ def test_ladder_runs_report_against_pre_ladder_starting_wealth():
     text = _describe(r)
     assert "start $1,200" in text
     assert "withdrawing $0/yr beyond the ladder" in text
+
+
+def test_partial_horizon_ladder_pays_later_rungs_coupons_early():
+    # A ladder covering only years 6-10 buys no rung for years 1-5, but the
+    # rungs it does hold pay coupons throughout, so income starts immediately.
+    targets = np.array([0.0] * 5 + [10_000.0] * 5)
+    lad = build_ladder_targets(targets, 10, 0.02)
+    faces = np.array(lad.faces)
+    assert np.allclose(faces[:5], 0.0)
+    assert (faces[5:] > 0).all()
+    pay = lad.payout_real()
+    assert np.allclose(pay[5:], 10_000.0)
+    assert (pay[:5] > 0).all() and (pay[:5] < 10_000.0).all()
+
+
+def test_maturity_split_gives_the_deferred_account_the_long_rungs():
+    annual, deferred, taxable = maturity_split(
+        total_budget=1_000_000.0, deferred_budget=200_000.0,
+        years=20, curve=0.02, first_year=11,
+    )
+    # Nothing is targeted to the deferred account before its window.
+    assert np.allclose(deferred[:10], 0.0)
+    assert (deferred[10:] > 0).all()
+    d = build_ladder_targets(deferred, 20, 0.02)
+    t = build_ladder_targets(taxable, 20, 0.02, taxable=True)
+    assert np.isclose(d.cost, 200_000.0, rtol=1e-6)
+    assert np.isclose(d.cost + t.cost, 1_000_000.0, rtol=1e-6)
+    # The household floor is unharmed: crediting the deferred account's early
+    # coupons means the split delivers what one undivided ladder would.
+    undivided = build_ladder(1.0, 20, 0.02)
+    assert np.isclose(annual, 1_000_000.0 / undivided.cost, rtol=1e-3)
+    combined = d.payout_real() + t.payout_real()
+    assert combined.min() >= annual - 1e-6
+
+
+def test_maturity_split_moves_phantom_income_out_of_the_taxable_account():
+    _, deferred, taxable = maturity_split(
+        1_000_000.0, 200_000.0, 20, 0.02, first_year=11
+    )
+    split_taxable = build_ladder_targets(taxable, 20, 0.02, taxable=True)
+    undivided = build_ladder(1.0, 20, 0.02)
+    prorata_taxable = build_ladder(
+        800_000.0 / undivided.cost, 20, 0.02, taxable=True
+    )
+    assert np.isclose(split_taxable.cost, prorata_taxable.cost, rtol=1e-3)
+    # Same taxable dollars, but fewer principal-years exposed to phantom tax.
+    assert (
+        split_taxable.remaining_principal_real().sum()
+        < prorata_taxable.remaining_principal_real().sum()
+    )
+
+
+def test_maturity_split_rejects_a_window_outside_the_horizon():
+    with pytest.raises(ValueError, match="first_year"):
+        maturity_split(1_000_000.0, 200_000.0, 20, 0.02, first_year=25)

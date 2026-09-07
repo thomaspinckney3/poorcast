@@ -29,6 +29,18 @@ class LadderSpec:
     # remaining principal ("phantom income") are federal ordinary income
     # (state-exempt, Treasury). False = tax-deferred account.
     taxable: bool = False
+    # Real dollars delivered in each year 1..years: the rung maturing that
+    # year plus coupons from every rung still outstanding. For a level ladder
+    # this is `annual` throughout; a ladder covering only part of the horizon
+    # (see build_ladder_targets) pays only later rungs' coupons before its
+    # first maturity, so the profile is not flat and must be carried per year.
+    payouts: tuple = ()
+
+    def payout_real(self) -> np.ndarray:
+        """Real income delivered in each year 1..years."""
+        if self.payouts:
+            return np.array(self.payouts, dtype=float)
+        return np.full(self.years, self.annual, dtype=float)
 
     def coupon_income_real(self) -> np.ndarray:
         """Real coupon income received during year t (0-indexed)."""
@@ -41,19 +53,41 @@ class LadderSpec:
         return np.array([f[t:].sum() for t in range(self.years)])
 
 
-def rung_faces(annual: float, years: int, real_yield) -> np.ndarray:
+def rung_faces(annual, years: int, real_yield) -> np.ndarray:
     """Face value of the rung maturing in each year 1..years (par TIPS).
-    real_yield: scalar, or an array of per-maturity yields (years 1..years)."""
+
+    annual: the real income targeted in each year - a scalar for a level
+    ladder, or an array of per-year targets. real_yield: scalar, or an array
+    of per-maturity yields (years 1..years).
+
+    Faces are floored at zero. A year whose target is already covered by
+    coupons from longer rungs buys no rung of its own and simply pays out
+    more than the target; that is what makes a partial-horizon ladder
+    representable.
+    """
     c = np.broadcast_to(np.asarray(real_yield, dtype=float), (years,))
+    tgt = np.broadcast_to(np.asarray(annual, dtype=float), (years,))
     face = np.zeros(years)
     for y in range(years - 1, -1, -1):
         coupons_from_later = (c[y + 1 :] * face[y + 1 :]).sum()
-        face[y] = (annual - coupons_from_later) / (1 + c[y])
+        face[y] = max((tgt[y] - coupons_from_later) / (1 + c[y]), 0.0)
     return face
 
 
-def _build(annual: float, years: int, yields: np.ndarray, taxable: bool) -> LadderSpec:
-    if annual <= 0:
+def payouts_from_faces(faces: np.ndarray, yields: np.ndarray) -> np.ndarray:
+    """Real income each year: the maturing rung redeeming at par with its own
+    final coupon, plus the coupons of every rung still outstanding."""
+    return np.array(
+        [
+            faces[t] * (1.0 + yields[t])
+            + (yields[t + 1 :] * faces[t + 1 :]).sum()
+            for t in range(len(faces))
+        ]
+    )
+
+
+def _build(annual, years: int, yields: np.ndarray, taxable: bool) -> LadderSpec:
+    if np.max(np.asarray(annual, dtype=float)) <= 0:
         raise ValueError("ladder annual amount must be positive")
     if not ((0 <= yields) & (yields < 0.2)).all():
         raise ValueError(
@@ -63,8 +97,10 @@ def _build(annual: float, years: int, yields: np.ndarray, taxable: bool) -> Ladd
     faces = rung_faces(annual, years, yields)
     cost = float(faces.sum())
     rep = float((yields * faces).sum() / cost)
-    return LadderSpec(annual=annual, years=years, real_yield=rep, cost=cost,
-                      faces=tuple(faces), coupons=tuple(yields), taxable=taxable)
+    pay = payouts_from_faces(faces, yields)
+    return LadderSpec(annual=float(np.min(pay)), years=years, real_yield=rep,
+                      cost=cost, faces=tuple(faces), coupons=tuple(yields),
+                      taxable=taxable, payouts=tuple(pay))
 
 
 def build_ladder(
@@ -88,11 +124,16 @@ def build_ladder_curve(
     future long real yields). Default: flat at the longest observed yield,
     which approximates locking the tail with bridge bonds; a conservative
     bracket is the historical DFII30 median (~1%)."""
+    return _build(annual, years, _curve_yields(years, curve, tail_yield), taxable)
+
+
+def _curve_yields(years, curve, tail_yield=None) -> np.ndarray:
+    """Per-maturity real yields for rungs 1..years off a {maturity: yield} curve."""
     mats = sorted(curve)
     ys = np.interp(np.arange(1, years + 1), mats, [curve[m] for m in mats])
     if tail_yield is not None:
         ys = np.where(np.arange(1, years + 1) > mats[-1], tail_yield, ys)
-    return _build(annual, years, ys, taxable)
+    return ys
 
 
 def current_real_curve(refresh: bool = True) -> dict[float, float]:
@@ -346,3 +387,107 @@ def format_ladder(
         f"(each year delivers ${spec.annual:,.0f} real)"
     )
     return "\n".join(out)
+
+
+def build_ladder_targets(
+    targets, years: int, curve: dict[float, float] | float,
+    taxable: bool = False, tail_yield: float | None = None,
+) -> LadderSpec:
+    """A ladder meeting a per-year target vector rather than a level amount.
+
+    `curve` is either a {maturity: real_yield} mapping (interpolated as in
+    build_ladder_curve) or a flat real yield.
+    """
+    if isinstance(curve, dict):
+        yields = _curve_yields(years, curve, tail_yield)
+    else:
+        yields = np.full(years, float(curve))
+    return _build(np.asarray(targets, dtype=float), years, yields, taxable)
+
+
+def maturity_split(
+    total_budget: float, deferred_budget: float, years: int, curve,
+    first_year: int, tail_yield: float | None = None,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Split a household ladder between a tax-deferred account and a taxable
+    one, giving the deferred account the LONGEST rungs it can safely hold.
+
+    Phantom income compounds with maturity, so a dollar of tax-deferred space
+    shelters far more tax on a 30-year rung than on a 5-year one. The catch is
+    required minimum distributions: an account holding only the very longest
+    rungs has no maturity to satisfy an RMD and must sell rungs early, which
+    forfeits the hold-to-maturity guarantee the ladder exists to provide.
+
+    So the deferred account is filled from `first_year` - the year RMDs begin -
+    to the horizon. If its budget cannot buy that whole window it takes a level
+    slice of every year in it, keeping a maturity in each RMD year; if the
+    budget more than covers the window, the window extends earlier.
+
+    Splitting by maturity costs slightly more than one undivided ladder,
+    because the deferred account's long rungs pay coupons in years where it
+    holds no target of its own. The level floor is therefore solved for the
+    money available rather than assumed: returns (annual, deferred_targets,
+    taxable_targets), the targets summing to `annual` from `first_year` on.
+    """
+    if not 1 <= first_year <= years:
+        raise ValueError(f"first_year must be in 1..{years}, got {first_year}")
+    if total_budget <= 0:
+        raise ValueError("total_budget must be positive")
+    deferred_budget = max(min(deferred_budget, total_budget), 0.0)
+
+    def cost_of(t):
+        return build_ladder_targets(t, years, curve, tail_yield=tail_yield).cost
+
+    def profile(annual):
+        """Deferred and taxable targets for a household floor of `annual`."""
+        window = np.zeros(years)
+        window[first_year - 1:] = annual
+        full = cost_of(window)
+        if deferred_budget <= full:
+            deferred = window * (deferred_budget / full) if full > 0 else window
+        else:
+            lo = first_year
+            while lo > 1:
+                trial = np.zeros(years)
+                trial[lo - 2:] = annual
+                if cost_of(trial) > deferred_budget:
+                    break
+                lo -= 1
+            deferred = np.zeros(years)
+            deferred[lo - 1:] = annual
+            if lo > 1:
+                used = cost_of(deferred)
+                step = np.zeros(years)
+                step[lo - 2] = annual
+                extra = cost_of(deferred + step) - used
+                if extra > 0:
+                    deferred[lo - 2] = annual * min(
+                        (deferred_budget - used) / extra, 1.0
+                    )
+        # The deferred account's long rungs pay coupons in the years before
+        # its first maturity, and the household receives them. Credit those
+        # against the taxable side rather than buying the floor twice.
+        d_spec = build_ladder_targets(
+            deferred, years, curve, tail_yield=tail_yield
+        )
+        taxable = np.maximum(np.full(years, float(annual)) - d_spec.payout_real(), 0.0)
+        return deferred, taxable
+
+    # Cost is linear in `annual` for a fixed deferred budget only while the
+    # deferred side is budget-bound, so solve rather than scale.
+    def total_cost(annual):
+        d, t = profile(annual)
+        return cost_of(d) + cost_of(t)
+
+    lo, hi = 0.0, total_budget / max(cost_of(np.ones(years)), 1e-12)
+    while total_cost(hi) < total_budget:
+        hi *= 1.5
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if total_cost(mid) < total_budget:
+            lo = mid
+        else:
+            hi = mid
+    annual = 0.5 * (lo + hi)
+    d, t = profile(annual)
+    return annual, d, t

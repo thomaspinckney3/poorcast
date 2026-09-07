@@ -176,3 +176,56 @@ def test_ladder_years_validated():
     with pytest.raises(ValueError, match="ladder_years"):
         simulate(make_panel(), cfg(
             allocation={"a": 0.5, "tips_ladder": 0.5}, ladder_years=0))
+
+
+def _household(placement, ladder_years=20):
+    """Taxable + traditional, each part ladder, at a zero real yield."""
+    return SimConfig(
+        accounts=(
+            Account("taxable", 800_000.0,
+                    allocation={"tips_ladder": 0.5, "a": 0.5}),
+            Account("traditional", 200_000.0, allocation={"tips_ladder": 1.0}),
+        ),
+        years=ladder_years, age=55, ladder_yield=0.0,
+        ladder_placement=placement, tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=30_000.0),
+        n_sims=2, seed=0,
+    )
+
+
+def test_maturity_placement_keeps_the_household_floor():
+    panel = make_panel(20 * 12)
+    pro = simulate(panel, _household("prorata"))
+    mat = simulate(panel, _household("maturity"))
+    assert np.isclose(pro.ladder_annual, mat.ladder_annual, rtol=1e-6)
+
+
+def test_maturity_placement_cuts_the_early_penalty_on_traditional_rungs():
+    # Under 59.5 for the first four years, rungs maturing inside the
+    # traditional account are penalized draws. Maturity placement pushes that
+    # account's rungs past the RMD age, so it delivers less early and the
+    # penalty drops.
+    panel = make_panel(20 * 12)
+    pro = simulate(panel, _household("prorata"))
+    mat = simulate(panel, _household("maturity"))
+    assert (mat.total_tax_real < pro.total_tax_real).all()
+
+
+def test_maturity_placement_needs_both_account_kinds():
+    panel = make_panel(20 * 12)
+    cfg = SimConfig(
+        accounts=(Account("taxable", 1_000_000.0,
+                          allocation={"tips_ladder": 0.5, "a": 0.5}),),
+        years=20, age=55, ladder_yield=0.0, ladder_placement="maturity",
+        tax_ordinary=0.25,
+        withdrawal=Withdrawal("fixed_real", amount=30_000.0), n_sims=2, seed=0,
+    )
+    with pytest.raises(ValueError, match="taxable and a"):
+        simulate(panel, cfg)
+
+
+def test_unknown_ladder_placement_rejected():
+    panel = make_panel(20 * 12)
+    cfg = _household("longest")
+    with pytest.raises(ValueError, match="ladder_placement"):
+        simulate(panel, cfg)
