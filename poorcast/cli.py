@@ -402,9 +402,12 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         type=float,
         default=None,
         metavar="AMOUNT",
-        help="federal estate tax exemption in TODAY'S dollars (e.g. 30000000 for "
-        "a married couple in 2026). The statutory amount is inflation-indexed, "
-        "so it is a constant in real terms. Omit to leave estate tax unmodeled",
+        help="estate tax exemption in TODAY'S dollars (e.g. 30000000 for a "
+        "married couple in 2026). Applied to TERMINAL WEALTH at the horizon as "
+        "a stand-in for the eventual estate - the horizon is not a death, and "
+        "the surviving spouse's remaining years come out of that pool first. "
+        "The statutory amount is inflation-indexed, so it is a real constant. "
+        "Omit to leave estate tax unmodeled",
     )
     r.add_argument(
         "--estate-rate",

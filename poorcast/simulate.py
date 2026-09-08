@@ -175,12 +175,19 @@ class SimConfig:
     # appreciation: US real house prices grew 0.75%/yr over 1890-2020
     # (Jorda-Schularick-Taylor), and the 5th-to-95th range of 40-year
     # outcomes runs roughly -0.3%/yr to +1.2%/yr.
-    # Federal estate tax on the combined estate (portfolio + residence) at the
-    # horizon. None = not modeled. The exemption is inflation-indexed in law,
-    # so in the real dollars this engine reports it is a constant: give it in
-    # today's money. Applied once at the horizon, which stands in for the
-    # second death - a simplification, since the second death may fall outside
-    # the modeled window.
+    # INDICATIVE estate tax, applied to terminal wealth (portfolio +
+    # residence) at the horizon. None = not modeled.
+    #
+    # The horizon is not a death. It is simply where the simulation stops, and
+    # the pool standing there still has to fund the surviving spouse's
+    # remaining years - including buying her deferred annuity - before
+    # anything is inherited. So this is the estate-tax RULE applied to
+    # terminal wealth as a stand-in, not a modeled estate: the eventual
+    # taxable estate is smaller by what she spends and larger by what it
+    # earns after the horizon.
+    #
+    # The exemption is inflation-indexed in law, so in the real dollars this
+    # engine reports it is a constant: give it in today's money.
     estate_exemption: float | None = None
     estate_tax_rate: float = 0.40
     house_value: float = 0.0
@@ -319,8 +326,10 @@ class SimResult:
     # per account (n_paths, n_accounts). None for single-account runs.
     account_kinds: tuple[str, ...] | None = None
     account_terminal: np.ndarray | None = None
-    # (n_paths,) real federal estate tax on the combined estate at the
-    # horizon, None when no exemption is configured.
+    # (n_paths,) indicative real estate tax on TERMINAL WEALTH at the horizon,
+    # None when no exemption is configured. See SimConfig.estate_exemption: the
+    # horizon is not a death, so this is a stand-in rather than a modeled
+    # estate.
     estate_tax_real: "np.ndarray | None" = None
     # (n_paths,) real terminal value of an owned residence, None if none
     # configured. Additive to the estate; never available to spend, so it
@@ -499,12 +508,14 @@ class _Acct:
 
 
 def _estate_tax(cfg, balance, cum_inflation, house_real):
-    """Real federal estate tax on the combined estate at the horizon.
+    """Indicative real estate tax on terminal wealth at the horizon.
 
-    The statutory exemption is indexed for inflation, so it holds roughly
-    constant in real terms and is applied as a real constant here. The house
-    is included: capital gains die with the step-up in basis, but the value
-    still counts toward the taxable estate.
+    Terminal wealth is not the estate: the horizon is where the simulation
+    stops, not a death, and the surviving spouse's remaining years are still
+    to be funded out of it. The statutory exemption is indexed for inflation,
+    so it holds roughly constant in real terms and is applied as one here. The
+    residence is included: its capital gain dies with the step-up in basis,
+    but its value still counts toward a taxable estate.
     """
     if not cfg.estate_exemption:
         return None

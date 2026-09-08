@@ -573,7 +573,7 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         )
         cp = np.percentile(combined, [5, 50, 95])
         print(
-            f"    estate incl. residence, per path: 5th {_dollars(cp[0])}"
+            f"    terminal wealth incl. residence, per path: 5th {_dollars(cp[0])}"
             f" · median {_dollars(cp[1])} · 95th {_dollars(cp[2])}"
         )
     _print_estate_tax(result, real)
@@ -594,7 +594,14 @@ def print_summary(result: SimResult, real: bool = True) -> None:
 
 
 def _print_estate_tax(result, real: bool) -> None:
-    """Federal estate tax on the combined estate, when configured."""
+    """Indicative estate tax on terminal wealth, when configured.
+
+    The horizon is not a death: it ends at the older spouse's 95 and the
+    younger spouse's 83, and the pool still has to fund her remaining years
+    and buy the deferred annuity before anything is inherited. This applies
+    the estate-tax rule to terminal wealth as a stand-in for the eventual
+    estate, which is why it is labelled indicative.
+    """
     t = result.estate_tax_real
     if t is None:
         return
@@ -607,14 +614,14 @@ def _print_estate_tax(result, real: bool) -> None:
     show = (lambda x: x) if real else (lambda x: x * infl)
     hit = (t > 0).mean()
     print(
-        f"  Federal estate tax ({cfg.estate_tax_rate:.0%} above "
-        f"{_dollars(cfg.estate_exemption)} of combined estate, today's dollars): "
-        f"owed on {hit:.0%} of paths"
+        f"  Estate tax, indicative ({cfg.estate_tax_rate:.0%} above "
+        f"{_dollars(cfg.estate_exemption)}, today's dollars) applied to terminal "
+        f"wealth as a stand-in for the eventual estate: owed on {hit:.0%} of paths"
     )
     p = np.percentile(show(net), [5, 50, 95])
     med_t = np.median(show(t)[t > 0]) if hit else 0.0
     print(
-        f"    median tax where owed {_dollars(med_t)} · estate NET of it: "
+        f"    median tax where owed {_dollars(med_t)} · terminal wealth net of it: "
         f"5th {_dollars(p[0])} · median {_dollars(p[1])} · 95th {_dollars(p[2])}"
     )
 
