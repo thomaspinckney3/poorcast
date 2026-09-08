@@ -398,6 +398,22 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "independent and carry their own seeds, so results do not change",
     )
     r.add_argument(
+        "--estate-exemption",
+        type=float,
+        default=None,
+        metavar="AMOUNT",
+        help="federal estate tax exemption in TODAY'S dollars (e.g. 30000000 for "
+        "a married couple in 2026). The statutory amount is inflation-indexed, "
+        "so it is a constant in real terms. Omit to leave estate tax unmodeled",
+    )
+    r.add_argument(
+        "--estate-rate",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help="marginal estate tax rate above the exemption (default 40)",
+    )
+    r.add_argument(
         "--house",
         dest="house_value",
         type=float,
@@ -1209,6 +1225,11 @@ def main(argv: list[str] | None = None) -> int:
             ladder_tail_yield=(
                 None if args.tips_ladder_tail is None
                 else args.tips_ladder_tail / 100.0
+            ),
+            estate_exemption=getattr(args, "estate_exemption", None),
+            estate_tax_rate=(
+                0.40 if getattr(args, "estate_rate", None) is None
+                else args.estate_rate / 100.0
             ),
             house_value=getattr(args, "house_value", None) or 0.0,
             house_real_growth=(

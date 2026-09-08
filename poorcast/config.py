@@ -161,7 +161,7 @@ TOP_KEYS = {
     "age", "initial", "horizons", "contribute", "optimize", "fees",
     "allocation", "glide", "withdrawal", "income", "pension", "expense",
     "taxes", "tips_ladder", "simulation", "output",
-    "account", "withdraw_order", "adjustments", "pe_path", "residence",
+    "account", "withdraw_order", "adjustments", "pe_path", "residence", "estate",
     "pe_conditioned", "pe_bandwidth", "proxies",
 }
 OPTIMIZE_KEYS = {"equity", "ladder", "tolerance", "anchor", "stress",
@@ -453,6 +453,16 @@ def load_config(path: str) -> dict:
             if not -10 <= g <= 20:
                 raise ConfigError("[residence] real_growth is a percent per year")
             out["house_real_growth"] = g / 100.0
+    if "estate" in raw:
+        e = raw["estate"]
+        _reject_unknown(e, {"exemption", "rate"}, "[estate]")
+        if "exemption" in e:
+            out["estate_exemption"] = _num(e["exemption"], "estate.exemption")
+        if "rate" in e:
+            v = _num(e["rate"], "estate.rate")
+            if not 0 <= v <= 100:
+                raise ConfigError("[estate] rate is a percent (0-100)")
+            out["estate_tax_rate"] = v / 100.0
     if "tips_ladder" in raw:
         lad = raw["tips_ladder"]
         _reject_unknown(

@@ -576,6 +576,7 @@ def print_summary(result: SimResult, real: bool = True) -> None:
             f"    estate incl. residence, per path: 5th {_dollars(cp[0])}"
             f" · median {_dollars(cp[1])} · 95th {_dollars(cp[2])}"
         )
+    _print_estate_tax(result, real)
     if result.account_terminal is not None:
         term = result.account_terminal
         if real:
@@ -590,3 +591,30 @@ def print_summary(result: SimResult, real: bool = True) -> None:
     if cfg.contribution_monthly == 0:
         print(f"  Median {unit} growth rate: {s['median_cagr']:.2%}/yr")
         print(f"  Chance of ending below start ({unit}): {s['prob_loss']:.1%}")
+
+
+def _print_estate_tax(result, real: bool) -> None:
+    """Federal estate tax on the combined estate, when configured."""
+    t = result.estate_tax_real
+    if t is None:
+        return
+    cfg = result.config
+    estate = result.real_balance[:, -1]
+    if result.house_terminal_real is not None:
+        estate = estate + np.asarray(result.house_terminal_real)
+    net = estate - t
+    infl = result.cum_inflation[:, -1]
+    show = (lambda x: x) if real else (lambda x: x * infl)
+    hit = (t > 0).mean()
+    print(
+        f"  Federal estate tax ({cfg.estate_tax_rate:.0%} above "
+        f"{_dollars(cfg.estate_exemption)} of combined estate, today's dollars): "
+        f"owed on {hit:.0%} of paths"
+    )
+    p = np.percentile(show(net), [5, 50, 95])
+    med_t = np.median(show(t)[t > 0]) if hit else 0.0
+    print(
+        f"    median tax where owed {_dollars(med_t)} · estate NET of it: "
+        f"5th {_dollars(p[0])} · median {_dollars(p[1])} · 95th {_dollars(p[2])}"
+    )
+

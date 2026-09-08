@@ -175,6 +175,14 @@ class SimConfig:
     # appreciation: US real house prices grew 0.75%/yr over 1890-2020
     # (Jorda-Schularick-Taylor), and the 5th-to-95th range of 40-year
     # outcomes runs roughly -0.3%/yr to +1.2%/yr.
+    # Federal estate tax on the combined estate (portfolio + residence) at the
+    # horizon. None = not modeled. The exemption is inflation-indexed in law,
+    # so in the real dollars this engine reports it is a constant: give it in
+    # today's money. Applied once at the horizon, which stands in for the
+    # second death - a simplification, since the second death may fall outside
+    # the modeled window.
+    estate_exemption: float | None = None
+    estate_tax_rate: float = 0.40
     house_value: float = 0.0
     # Real appreciation used only when the panel carries no `us_housing`
     # column. With one, the residence is grown on the SAME sampled months as
@@ -311,6 +319,9 @@ class SimResult:
     # per account (n_paths, n_accounts). None for single-account runs.
     account_kinds: tuple[str, ...] | None = None
     account_terminal: np.ndarray | None = None
+    # (n_paths,) real federal estate tax on the combined estate at the
+    # horizon, None when no exemption is configured.
+    estate_tax_real: "np.ndarray | None" = None
     # (n_paths,) real terminal value of an owned residence, None if none
     # configured. Additive to the estate; never available to spend, so it
     # takes no part in the success rate or in depletion.
@@ -485,6 +496,22 @@ class _Acct:
         self.taxed = taxed  # taxable basis/income machinery active
         self.income_credit = None
 
+
+
+def _estate_tax(cfg, balance, cum_inflation, house_real):
+    """Real federal estate tax on the combined estate at the horizon.
+
+    The statutory exemption is indexed for inflation, so it holds roughly
+    constant in real terms and is applied as a real constant here. The house
+    is included: capital gains die with the step-up in basis, but the value
+    still counts toward the taxable estate.
+    """
+    if not cfg.estate_exemption:
+        return None
+    estate = balance[:, -1] / cum_inflation[:, -1]
+    if house_real is not None:
+        estate = estate + house_real
+    return cfg.estate_tax_rate * np.maximum(estate - cfg.estate_exemption, 0.0)
 
 def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     multi = cfg.accounts is not None
@@ -1555,6 +1582,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         final_dead = (depleted_month < 0) & (balance[:, -1] <= 1e-9)
         depleted_month[final_dead] = n_months - 1
 
+    house_real = (
+        house_nominal / cum_inflation[:, -1]
+        if house_nominal is not None
+        else (np.full(n_paths, house_flat) if house_flat is not None else None)
+    )
     return SimResult(
         config=cfg,
         months=months,
@@ -1583,11 +1615,8 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             if multi
             else None
         ),
-        house_terminal_real=(
-            house_nominal / cum_inflation[:, -1]
-            if house_nominal is not None
-            else (np.full(n_paths, house_flat) if house_flat is not None else None)
-        ),
+        estate_tax_real=_estate_tax(cfg, balance, cum_inflation, house_real),
+        house_terminal_real=house_real,
         ladder_annual=ladder_annual_total or None,
         ladder_annual_start=ladder_annual_first or None,
         total_unmet_real=total_unmet_real if acct_ladders else None,
