@@ -44,6 +44,9 @@ ASSET_DESCRIPTIONS = {
     "Ken French Developed ex US 1990+)",
     "us_bonds_10yr": "10-year US Treasuries (total return derived from FRED GS10 yields; "
     "the Fed long-term composite LTGOVTBD before 1953)",
+    "us_bonds_20yr": "Long US Treasuries (20-year constant maturity; total return "
+    "derived from FRED GS20, GS30 level-adjusted across the 1987-93 gap when the "
+    "20-year was not issued, the Fed long-term composite LTGOVTBD before 1953)",
     "muni_bonds": "Municipal bonds (returns derived from Bond Buyer GO-20 yields "
     "1953-2007, NBER high-grade muni yields 1937-52, a Treasury-ratio proxy before; "
     "observed MUB ETF total returns 2007+; income exempt from federal and state tax)",
@@ -149,6 +152,7 @@ INCOME_CLASS = {
     "us_small_cap": "dividend",
     "intl_equities": "dividend",
     "us_bonds_10yr": "interest",  # federal ordinary rate; STATE-EXEMPT (Treasury)
+    "us_bonds_20yr": "interest",
     "cash": "interest",
     "muni_bonds": "muni",  # exempt from federal and (own-state assumption) state
 }
@@ -284,6 +288,29 @@ def treasury_yield_history(refresh: bool = False) -> pd.Series:
     return splice_yields(gs10, lt, offset).rename("GS10")
 
 
+def long_treasury_yield_history(refresh: bool = False) -> pd.Series:
+    """20-year Treasury yield, percent. FRED GS20 (1953-04+) is the spine; the
+    20-year was not issued between 1987 and 1993, and that gap is filled with
+    GS30 level-adjusted to GS20 on their overlap. Extended back to 1925 with
+    the Fed's long-term government composite (LTGOVTBD), the same series that
+    extends the 10-year.
+
+    Twenty years rather than thirty keeps one constant maturity across the
+    whole history: GS30 itself only starts in 1977 and was discontinued
+    2002-2006, so a 30-year spine would carry two gaps instead of one.
+    """
+    gs20 = fetch_fred("GS20", refresh)
+    gs30 = fetch_fred("GS30", refresh)
+    both = pd.concat([gs30.rename("g30"), gs20.rename("g20")], axis=1).dropna()
+    offset = float((both["g20"] - both["g30"]).mean()) if len(both) else 0.0
+    spine = splice_yields(gs20, (gs30 + offset).dropna(), 0.0)
+    lt = fetch_fred("LTGOVTBD", refresh)
+    o = pd.concat([lt.rename("lt"), spine.rename("s")], axis=1).dropna()
+    o = o[: pd.Period("1955-12", freq="M")]
+    off2 = float((o["s"] - o["lt"]).mean()) if len(o) else 0.0
+    return splice_yields(spine, lt, off2).rename("GS20")
+
+
 def muni_yield_history(refresh: bool = False) -> pd.Series:
     """Bond Buyer 20-bond yield, percent (FRED MSLB20, 1953-01..2016-09),
     extended back to 1925: the NBER Macrohistory high-grade municipal series
@@ -371,6 +398,10 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
 
     gs10 = treasury_yield_history(refresh)
     bonds = bond_returns_from_yields(gs10)
+    gs20 = long_treasury_yield_history(refresh)
+    long_bonds = bond_returns_from_yields(gs20, maturity_years=20).rename(
+        "us_bonds_20yr"
+    )
     munis, muni_income = fetch_muni_returns(refresh)
 
     # Seasonally adjusted CPI from 1947; the unadjusted index (1913+) before
@@ -396,6 +427,7 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
         "income_us_small_cap": div_yield.rename("income_us_small_cap"),
         "income_intl_equities": intl_dividend_yield(refresh),
         "income_us_bonds_10yr": (gs10.shift(1) / 100 / 12),
+        "income_us_bonds_20yr": (gs20.shift(1) / 100 / 12),
         "income_muni_bonds": muni_income,
         "income_cash": us["rf"],
     }
@@ -403,7 +435,7 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
     # data/custom/<asset>.csv overrides any built-in series where it has values.
     series = [
         _apply_custom_override(str(s.name), s)
-        for s in (us_eq, small, intl, bonds, munis, cash)
+        for s in (us_eq, small, intl, bonds, long_bonds, munis, cash)
     ]
     panel = pd.concat(series + [inflation], axis=1).sort_index()
     for name, series in income.items():

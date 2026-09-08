@@ -518,6 +518,7 @@ stress = [{year = 0, pe = 30}, {year = 10, pe = 10}, {year = 40, pe = 25}]
 | `us_equities` | 1926+ | CRSP value-weighted total market (Ken French library) |
 | `us_small_cap` | 1926+ | bottom 30% by market cap, value-weighted (Ken French) |
 | `intl_equities` | 1955+ | reconstructed composite of up to 8 countries (1955–85), AQR Global ex USA (1986–90), Ken French Developed ex US (1990+) |
+| `us_bonds_20yr` | 1925+ | Long Treasuries at 20-year constant maturity, from FRED GS20 with GS30 level-adjusted across the 1987-93 gap when the 20-year was not issued, extended with LTGOVTBD before 1953 |
 | `us_bonds_10yr` | 1925+ | 10-yr Treasury total return derived from FRED GS10 yields (1953+), extended with the Fed's long-term government composite (LTGOVTBD, level-adjusted) before |
 | `muni_bonds` | 1925+ | Bond Buyer GO-20 yields (1953+) priced at their 20y maturity through 2007, observed MUB ETF total returns after; NBER high-grade muni yields 1937–52 (level-adjusted) and a Treasury-ratio proxy before 1937 |
 | `cash` | 1926+ | 1-month T-bill (Ken French) |
