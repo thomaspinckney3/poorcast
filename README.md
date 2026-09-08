@@ -197,11 +197,11 @@ Bracket `--tips-ladder-yield` with 0–2 (%) to see regime sensitivity, or use
 By default the ladder is taxable (coupons + inflation accrual taxed as
 ordinary income); `--tips-ladder-deferred` holds it in an IRA. With
 `--account traditional` the ladder is necessarily bought with IRA money, so
-its payouts are taxed as distributions and its rungs count toward RMDs.
+its payouts are taxed as distributions and its TIPS count toward RMDs.
 
 **Or hold the ladder as an allocation**: the reserved asset name
-`tips_ladder` in any allocation buys rungs with that share of the balance at
-t=0 — a purchase-time cost share, not a maintained weight (rungs amortize
+`tips_ladder` in any allocation buys TIPS with that share of the balance at
+t=0 — a purchase-time cost share, not a maintained weight (they amortize
 and never rebalance; the other assets renormalize around them). Rung income
 offsets withdrawals; remaining principal is carried in reported balances at
 par but can't be drawn early. In a household this makes **ladder asset
@@ -211,7 +211,7 @@ location** first-class:
 [[account]]
 type = "roth"
 balance = 500_000
-allocation = { tips_ladder = 100 }   # rung payouts tax-free
+allocation = { tips_ladder = 100 }   # TIPS payouts tax-free
 
 [tips_ladder]
 curve = true      # or yield = 2.0; years = N (default: the horizon)
@@ -219,13 +219,13 @@ curve = true      # or yield = 2.0; years = N (default: the horizon)
 
 Taxation follows the holding account: taxable = phantom income; traditional
 = payouts are RMD-countable ordinary-income distributions (RMDs are owed on
-the rungs' value too); Roth = free. Not combinable with `--tips-ladder` or
+the TIPS' value too); Roth = free. Not combinable with `--tips-ladder` or
 529 accounts. A glidepath in the same account moves the liquid sleeve only;
-the rungs are a purchase-time share and stay put.
+the TIPS are a purchase-time share and stay put.
 
-Rungs beyond the curve's 30-year point cannot be bought today; **the default
+TIPS beyond the curve's 30-year point cannot be bought today; **the default
 assumes they are bridged** — extra 30-year TIPS held (duration-scaled) and
-rolled into the long rungs as those maturities are auctioned — which locks
+rolled into the long maturities as those maturities are auctioned — which locks
 approximately today's forward real rates. `--tips-ladder-tail PCT` (or
 `tail_yield` in `[tips_ladder]`) prices the tail at an assumed future roll
 yield instead, for the unbridged case (the 2010–26 DFII30 median ≈ 1.0 is
@@ -383,7 +383,12 @@ equity_cost_basis = 0.5     # the equity sleeve is half unrealized gain;
 allocation = { us_equities = 60, muni_bonds = 35, cash = 5 }
 
 [tips_ladder]
-placement = "maturity"      # one household ladder, rungs assigned by
+shape = "spending"          # payout profile: "level" (default, the same
+                            # real income every year) or "spending", which
+                            # follows the withdrawal rule's age decline so
+                            # the TIPS hedge the floor actually needed
+                            # instead of over-insuring the late years
+placement = "maturity"      # one household ladder, TIPS assigned by
                             # maturity: the traditional account takes the
                             # longest it can hold without an RMD forcing an
                             # early sale. Phantom income compounds with
@@ -394,7 +399,7 @@ deferred_from = 79          # optional: the age the deferred window opens
                             # (default 73, the RMD age, the latest start
                             # that still puts a maturity in every required-
                             # distribution year). Later shelters more but
-                            # leaves distribution years unfunded by a rung.
+                            # leaves distribution years unfunded by a maturity.
 
 [[account]]
 type = "traditional"        # the 401k/IRA
@@ -482,13 +487,13 @@ scenario assumptions: `poorcast run --config plan.toml --optimize
 **Choosing by tolerance, not by decimals.** By default the search ranks
 strictly by success rate, and at today's real yields that ranking climbs
 toward a full TIPS ladder: once guaranteed income covers the (flexed) budget
-nothing can fail, and a 0/1 loss gives no credit for estate. The decimals
+nothing can fail, and a 0/1 loss gives no credit for terminal wealth. The decimals
 it is climbing are not real: with paired paths the Monte Carlo noise is
 tiny, but every path recombines one history, so success differences of a
 point or two may not survive a different draw of it. `--optimize-tolerance
 2` (or `tolerance = 2` under `[optimize]`, in success-rate points) treats
 every candidate within that band of the best success rate as tied and picks
-the highest median real estate among them; the report also prints the pick
+the highest median real terminal wealth among them; the report also prints the pick
 at 1, 2 and 3 points so the frontier, not one number, is what you see. The
 tolerance is the household's risk preference made explicit. `--optimize-
 stress "30@0,10@10,25@40"` (or `stress = [{year, pe}, ...]`) scores every
@@ -513,7 +518,7 @@ glide_years = 20                      # how long the drift takes
 #     --proxy intl_equities=us_equities --multiple-expansion 0
 # Against 1926-2026 with no valuation assumption the glide keeps its success
 # and tail benefit (+1.1 pts, +$0.8M at the 5th pct at matched average
-# equity) but loses its median-estate advantage entirely.
+# equity) but loses its median-terminal-wealth advantage entirely.
 tolerance = 2                 # success-rate points treated as a tie
 anchor = "stress"             # measure the band under the stress path
 stress = [{year = 0, pe = 30}, {year = 10, pe = 10}, {year = 40, pe = 25}]
@@ -647,7 +652,7 @@ pre-liquidation.
 | `poorcast run` | run a simulation (see `run --help` for all flags) |
 | `poorcast decompose` | split historical US equity returns into dividends, inflation, real EPS growth (margin vs underlying), and P/E multiple expansion |
 | `poorcast validate-intl` | out-of-sample check of the pre-1986 international reconstruction |
-| `poorcast ladder` | generate a TIPS ladder buy list (rung face values by maturity) from `--annual`/`--cost` + pricing, or a plan's `--config`. `--cusips` looks up outstanding TIPS from TreasuryDirect, consolidating each gap year onto the nearest earlier bond and flagging tail years that need bridging |
+| `poorcast ladder` | generate a TIPS ladder buy list (face values by maturity) from `--annual`/`--cost` + pricing, or a plan's `--config`. `--cusips` looks up outstanding TIPS from TreasuryDirect, consolidating each gap year onto the nearest earlier bond and flagging tail years that need bridging |
 
 ## Python API
 
