@@ -551,7 +551,10 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         h = np.asarray(result.house_terminal_real)
         cfg0 = result.config
         sampled = float(h.std()) > 1e-6
-        hp = np.percentile(h, [5, 50, 95])
+        infl = result.cum_inflation[:, -1]
+        # Report the residence in the same money as everything else around it.
+        shown = h if real else h * infl
+        hp = np.percentile(shown, [5, 50, 95])
         how = (
             "grown on the same sampled months as the portfolio"
             if sampled
@@ -559,11 +562,10 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         )
         print(
             f"  Residence (owned throughout, never spent): "
-            f"{_dollars(cfg0.house_value)} today, {how} · real value at the "
+            f"{_dollars(cfg0.house_value)} today, {how} · {unit} value at the "
             f"horizon: 5th {_dollars(hp[0])} · median {_dollars(hp[1])} · "
             f"95th {_dollars(hp[2])}"
         )
-        infl = result.cum_inflation[:, -1]
         combined = (
             result.real_balance[:, -1] + h
             if real
