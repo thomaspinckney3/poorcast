@@ -336,11 +336,6 @@ at = 65
 amount = 50_000
 at = 70                      # the roof
 
-[estate]                     # federal estate tax at the horizon
-exemption = 30_000_000       # TODAY'S dollars. The statutory amount is
-rate = 40                    # inflation-indexed, so it is a real constant.
-                             # Omit the section to leave estate tax unmodeled.
-
 [residence]                  # a home owned and lived in throughout
 value = 4_000_000            # today's value; never funds a withdrawal, so it
 real_growth = 0.75           # cannot change the success rate. %/yr real,

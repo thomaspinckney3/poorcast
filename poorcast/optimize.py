@@ -393,13 +393,13 @@ def optimize_household(
 
     With success_tolerance == 0 the ranking is strict: mean success, then
     p5, then median real terminal wealth. With a positive tolerance the
-    pick is the highest-estate candidate within that band of the best
+    pick is the highest-terminal-wealth candidate within that band of the best
     success rate (see pick_within_tolerance); `stress` (a SimConfig that
     differs from `base` in its scenario settings) adds a second world in
     which every candidate is also scored, and anchor='stress' computes the
     band on it. Estate is always judged in the base case. Refinement then
-    covers the band's members (highest estate first, up to top_k) rather
-    than the top success rates alone, so a high-estate candidate is not
+    covers the band's members (highest terminal wealth first, up to top_k)
+    rather than the top success rates alone, so a high-wealth candidate is not
     dropped before the tolerance can favor it.
     """
     if not 0 <= success_tolerance < 1:
@@ -468,7 +468,7 @@ def optimize_household(
         # underweight equities during the assumed bad years and overweight
         # during the assumed good ones. Tested against a century of history
         # with no valuation assumption, the glide's SUCCESS and tail benefit
-        # survives intact but its median-estate advantage disappears
+        # survives intact but its median-terminal-wealth advantage disappears
         # entirely - so a search run under a path overstates the case.
         if base.pe_path_assumed or (stress is not None and stress.pe_path_assumed):
             raise ValueError(
@@ -543,7 +543,7 @@ def optimize_household(
     rows.sort(key=lambda r: (-r["success"], -r["p5"], -r["median"]))
 
     if success_tolerance > 0:
-        # Refine the band's members, highest estate first, keeping the best
+        # Refine the band's members, highest terminal wealth first, keeping the best
         # success rate in the set so the band stays anchored after refining.
         key = "success" if anchor == "base" else "stress_success"
         best = max(r[key] for r in rows)

@@ -230,7 +230,7 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         default=0.0,
         metavar="PTS",
         help="household --optimize: treat candidates within PTS points of the "
-        "best success rate as tied and pick the highest median real estate "
+        "best success rate as tied and pick the highest median real terminal wealth "
         "among them (default 0 = strict success ranking). The tolerance is "
         "the household's risk preference: with one shared history, success "
         "differences of a point or two may not be real",
@@ -398,25 +398,6 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "independent and carry their own seeds, so results do not change",
     )
     r.add_argument(
-        "--estate-exemption",
-        type=float,
-        default=None,
-        metavar="AMOUNT",
-        help="estate tax exemption in TODAY'S dollars (e.g. 30000000 for a "
-        "married couple in 2026). Applied to TERMINAL WEALTH at the horizon as "
-        "a stand-in for the eventual estate - the horizon is not a death, and "
-        "the surviving spouse's remaining years come out of that pool first. "
-        "The statutory amount is inflation-indexed, so it is a real constant. "
-        "Omit to leave estate tax unmodeled",
-    )
-    r.add_argument(
-        "--estate-rate",
-        type=float,
-        default=None,
-        metavar="PCT",
-        help="marginal estate tax rate above the exemption (default 40)",
-    )
-    r.add_argument(
         "--house",
         dest="house_value",
         type=float,
@@ -425,7 +406,7 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         help="value of a residence the household owns and lives in throughout. "
         "It never funds a withdrawal and cannot rescue a failing path, so it is "
         "excluded from the success rate and reported as a separate addition to "
-        "the estate",
+        "terminal wealth",
     )
     r.add_argument(
         "--house-growth",
@@ -1229,11 +1210,6 @@ def main(argv: list[str] | None = None) -> int:
                 None if args.tips_ladder_tail is None
                 else args.tips_ladder_tail / 100.0
             ),
-            estate_exemption=getattr(args, "estate_exemption", None),
-            estate_tax_rate=(
-                0.40 if getattr(args, "estate_rate", None) is None
-                else args.estate_rate / 100.0
-            ),
             house_value=getattr(args, "house_value", None) or 0.0,
             house_real_growth=(
                 0.0075 if getattr(args, "house_growth", None) is None
@@ -1338,13 +1314,13 @@ def main(argv: list[str] | None = None) -> int:
                 from .optimize import tolerance_picks
 
                 print(f"\nPick by success tolerance ({opt_anchor}-anchored band, "
-                      "highest median estate within the band; from the screen):")
+                      "highest median terminal wealth within the band; from the screen):")
                 for t, row in tolerance_picks(screened, opt_anchor).items():
                     line = f"  {t * 100:.0f} pt{'s' if t > 0.01 else ' '}: {row['label']:<28} " \
                            f"success {row['success']:.1%}"
                     if has_stress:
                         line += f", stress {row['stress_success']:.1%}"
-                    line += f", estate ${row['median'] / 1e6:.1f}M, floor ${row['floor']:,.0f}/yr"
+                    line += f", wealth ${row['median'] / 1e6:.1f}M, floor ${row['floor']:,.0f}/yr"
                     print(line)
                 chosen = next(r["label"] for r in board if r["overrides"] == best)
                 print(f"Selected at {opt_tol:g} pt{'s' if opt_tol != 1 else ''}: {chosen}")

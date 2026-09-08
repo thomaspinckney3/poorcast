@@ -171,25 +171,10 @@ class SimConfig:
     # A residence the household owns and lives in for the whole horizon. It
     # never funds a withdrawal and cannot rescue a failing path, so it is kept
     # out of `balance` entirely and out of the success rate; it is reported as
-    # a separate addition to the estate. `house_real_growth` is annual real
+    # a separate addition to terminal wealth. `house_real_growth` is annual real
     # appreciation: US real house prices grew 0.75%/yr over 1890-2020
     # (Jorda-Schularick-Taylor), and the 5th-to-95th range of 40-year
     # outcomes runs roughly -0.3%/yr to +1.2%/yr.
-    # INDICATIVE estate tax, applied to terminal wealth (portfolio +
-    # residence) at the horizon. None = not modeled.
-    #
-    # The horizon is not a death. It is simply where the simulation stops, and
-    # the pool standing there still has to fund the surviving spouse's
-    # remaining years - including buying her deferred annuity - before
-    # anything is inherited. So this is the estate-tax RULE applied to
-    # terminal wealth as a stand-in, not a modeled estate: the eventual
-    # taxable estate is smaller by what she spends and larger by what it
-    # earns after the horizon.
-    #
-    # The exemption is inflation-indexed in law, so in the real dollars this
-    # engine reports it is a constant: give it in today's money.
-    estate_exemption: float | None = None
-    estate_tax_rate: float = 0.40
     house_value: float = 0.0
     # Real appreciation used only when the panel carries no `us_housing`
     # column. With one, the residence is grown on the SAME sampled months as
@@ -326,13 +311,8 @@ class SimResult:
     # per account (n_paths, n_accounts). None for single-account runs.
     account_kinds: tuple[str, ...] | None = None
     account_terminal: np.ndarray | None = None
-    # (n_paths,) indicative real estate tax on TERMINAL WEALTH at the horizon,
-    # None when no exemption is configured. See SimConfig.estate_exemption: the
-    # horizon is not a death, so this is a stand-in rather than a modeled
-    # estate.
-    estate_tax_real: "np.ndarray | None" = None
     # (n_paths,) real terminal value of an owned residence, None if none
-    # configured. Additive to the estate; never available to spend, so it
+    # configured. Additive to terminal wealth; never available to spend, so it
     # takes no part in the success rate or in depletion.
     house_terminal_real: "np.ndarray | None" = None
     # Total real income/yr of allocation-based TIPS ladders, None if none.
@@ -506,23 +486,6 @@ class _Acct:
         self.income_credit = None
 
 
-
-def _estate_tax(cfg, balance, cum_inflation, house_real):
-    """Indicative real estate tax on terminal wealth at the horizon.
-
-    Terminal wealth is not the estate: the horizon is where the simulation
-    stops, not a death, and the surviving spouse's remaining years are still
-    to be funded out of it. The statutory exemption is indexed for inflation,
-    so it holds roughly constant in real terms and is applied as one here. The
-    residence is included: its capital gain dies with the step-up in basis,
-    but its value still counts toward a taxable estate.
-    """
-    if not cfg.estate_exemption:
-        return None
-    estate = balance[:, -1] / cum_inflation[:, -1]
-    if house_real is not None:
-        estate = estate + house_real
-    return cfg.estate_tax_rate * np.maximum(estate - cfg.estate_exemption, 0.0)
 
 def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     multi = cfg.accounts is not None
@@ -1626,7 +1589,6 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             if multi
             else None
         ),
-        estate_tax_real=_estate_tax(cfg, balance, cum_inflation, house_real),
         house_terminal_real=house_real,
         ladder_annual=ladder_annual_total or None,
         ladder_annual_start=ladder_annual_first or None,

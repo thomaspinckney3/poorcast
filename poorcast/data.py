@@ -428,7 +428,7 @@ def fetch_house_returns(refresh: bool = False) -> pd.Series:
     """Monthly nominal capital-gain returns on US housing.
 
     Capital gain only, not total return: an owner-occupier consumes the rent
-    yield by living there, so it never accrues to the estate.
+    yield by living there, so it never accrues to terminal wealth.
     """
     return house_price_index(refresh).pct_change().dropna().rename("us_housing")
 
