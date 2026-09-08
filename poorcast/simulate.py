@@ -168,6 +168,15 @@ class SimConfig:
     # True when an explicit P/E path supplies the valuation assumption
     # (rather than history being left as sampled). Recorded so searches
     # that a valuation path would bias can refuse to run under one.
+    # A residence the household owns and lives in for the whole horizon. It
+    # never funds a withdrawal and cannot rescue a failing path, so it is kept
+    # out of `balance` entirely and out of the success rate; it is reported as
+    # a separate addition to the estate. `house_real_growth` is annual real
+    # appreciation: US real house prices grew 0.75%/yr over 1890-2020
+    # (Jorda-Schularick-Taylor), and the 5th-to-95th range of 40-year
+    # outcomes runs roughly -0.3%/yr to +1.2%/yr.
+    house_value: float = 0.0
+    house_real_growth: float = 0.0075
     pe_path_assumed: bool = False
     ladder_placement: str = "prorata"
     # ladder_placement="maturity": the age at which the tax-deferred
@@ -299,6 +308,9 @@ class SimResult:
     # per account (n_paths, n_accounts). None for single-account runs.
     account_kinds: tuple[str, ...] | None = None
     account_terminal: np.ndarray | None = None
+    # Real terminal value of an owned residence, None if none configured.
+    # Additive to the estate; never available to spend.
+    house_terminal_real: float | None = None
     # Total real income/yr of allocation-based TIPS ladders, None if none.
     # `ladder_annual` is the guaranteed minimum across the horizon; with a
     # spending-shaped profile the ladder starts higher and declines to it, so
@@ -1543,6 +1555,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             )
             if multi
             else None
+        ),
+        house_terminal_real=(
+            cfg.house_value * (1.0 + cfg.house_real_growth) ** cfg.years
+            if cfg.house_value > 0 else None
         ),
         ladder_annual=ladder_annual_total or None,
         ladder_annual_start=ladder_annual_first or None,

@@ -398,6 +398,25 @@ def build_parser(run_defaults: dict | None = None) -> argparse.ArgumentParser:
         "independent and carry their own seeds, so results do not change",
     )
     r.add_argument(
+        "--house",
+        dest="house_value",
+        type=float,
+        default=None,
+        metavar="VALUE",
+        help="value of a residence the household owns and lives in throughout. "
+        "It never funds a withdrawal and cannot rescue a failing path, so it is "
+        "excluded from the success rate and reported as a separate addition to "
+        "the estate",
+    )
+    r.add_argument(
+        "--house-growth",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help="annual REAL appreciation of --house (default 0.75, the 1890-2020 "
+        "US average; 40-year outcomes ranged about -0.3 to +1.2)",
+    )
+    r.add_argument(
         "--ladder-shape",
         dest="ladder_shape",
         choices=("level", "spending"),
@@ -1190,6 +1209,11 @@ def main(argv: list[str] | None = None) -> int:
             ladder_tail_yield=(
                 None if args.tips_ladder_tail is None
                 else args.tips_ladder_tail / 100.0
+            ),
+            house_value=getattr(args, "house_value", None) or 0.0,
+            house_real_growth=(
+                0.0075 if getattr(args, "house_growth", None) is None
+                else args.house_growth / 100.0
             ),
             ladder_placement=getattr(args, "ladder_placement", None) or "prorata",
             ladder_shape=getattr(args, "ladder_shape", None) or "level",

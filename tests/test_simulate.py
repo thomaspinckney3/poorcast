@@ -426,3 +426,37 @@ def test_proxies_extend_the_window_and_are_counted():
     assert len(r0.window) == n - 120 and r0.proxied is None
     with pytest.raises(ValueError, match="proxy"):
         simulate(panel, SimConfig(**base, proxies={"b": "zzz"}))
+
+
+def test_residence_adds_to_the_estate_without_touching_the_plan():
+    # A house the household lives in throughout never funds a withdrawal, so
+    # it must not change any path: same success, same balances, same months.
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    rng = np.random.default_rng(6)
+    panel = pd.DataFrame({
+        "us_equities": rng.normal(0.004, 0.04, 480),
+        "cash": np.full(480, 0.002), "inflation": np.full(480, 0.002),
+    }, index=idx)
+    base = dict(allocation={"us_equities": 0.6, "cash": 0.4}, initial=1e6,
+                years=10, n_sims=300, seed=11,
+                withdrawal=Withdrawal("fixed_real", rate=0.06))
+    plain = simulate(panel, SimConfig(**base))
+    withhouse = simulate(panel, SimConfig(**base, house_value=500_000.0))
+    assert withhouse.success_rate == plain.success_rate
+    assert np.allclose(withhouse.balance, plain.balance)
+    assert plain.house_terminal_real is None
+    # default 0.75%/yr real over ten years
+    assert withhouse.house_terminal_real == pytest.approx(
+        500_000.0 * 1.0075 ** 10
+    )
+
+
+def test_residence_growth_rate_is_configurable():
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    panel = pd.DataFrame({
+        "us_equities": np.full(480, 0.004), "inflation": np.zeros(480),
+    }, index=idx)
+    cfg = SimConfig(allocation={"us_equities": 1.0}, initial=1e6, years=20,
+                    n_sims=20, seed=1, house_value=1_000_000.0,
+                    house_real_growth=0.0)
+    assert simulate(panel, cfg).house_terminal_real == pytest.approx(1_000_000.0)

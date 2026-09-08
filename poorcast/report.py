@@ -547,6 +547,19 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         ("95th pct", "terminal_p95"),
     ]:
         print(f"    {label}  {_dollars(s[key]):>10}")
+    if result.house_terminal_real:
+        h = result.house_terminal_real
+        cfg0 = result.config
+        print(
+            f"  Residence (owned throughout, never spent): "
+            f"{_dollars(cfg0.house_value)} today grows to {_dollars(h)} real at "
+            f"{cfg0.house_real_growth:.2%}/yr, added to every estate above"
+        )
+        print(
+            f"    estate incl. residence: 5th {_dollars(s['terminal_p5'] + h)}"
+            f" · median {_dollars(s['terminal_median'] + h)}"
+            f" · 95th {_dollars(s['terminal_p95'] + h)}"
+        )
     if result.account_terminal is not None:
         term = result.account_terminal
         if real:

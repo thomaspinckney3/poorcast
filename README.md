@@ -336,6 +336,11 @@ at = 65
 amount = 50_000
 at = 70                      # the roof
 
+[residence]                  # a home owned and lived in throughout
+value = 4_000_000            # today's value; never funds a withdrawal, so it
+real_growth = 0.75           # cannot change the success rate. %/yr real
+                             # (default 0.75, the 1890-2020 US average)
+
 [taxes]
 account = "taxable"          # taxable | traditional | roth | 529
 filing = "married"
