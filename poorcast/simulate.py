@@ -176,6 +176,9 @@ class SimConfig:
     # (Jorda-Schularick-Taylor), and the 5th-to-95th range of 40-year
     # outcomes runs roughly -0.3%/yr to +1.2%/yr.
     house_value: float = 0.0
+    # Real appreciation used only when the panel carries no `us_housing`
+    # column. With one, the residence is grown on the SAME sampled months as
+    # every other holding, so its outcome and the market's share a path.
     house_real_growth: float = 0.0075
     pe_path_assumed: bool = False
     ladder_placement: str = "prorata"
@@ -308,9 +311,10 @@ class SimResult:
     # per account (n_paths, n_accounts). None for single-account runs.
     account_kinds: tuple[str, ...] | None = None
     account_terminal: np.ndarray | None = None
-    # Real terminal value of an owned residence, None if none configured.
-    # Additive to the estate; never available to spend.
-    house_terminal_real: float | None = None
+    # (n_paths,) real terminal value of an owned residence, None if none
+    # configured. Additive to the estate; never available to spend, so it
+    # takes no part in the success rate or in depletion.
+    house_terminal_real: "np.ndarray | None" = None
     # Total real income/yr of allocation-based TIPS ladders, None if none.
     # `ladder_annual` is the guaranteed minimum across the horizon; with a
     # spending-shaped profile the ladder starts higher and declines to it, so
@@ -820,6 +824,29 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
 
     if not 0 <= cfg.fee_annual < 0.1:
         raise ValueError(f"fee_annual must be in [0, 0.1), got {cfg.fee_annual}")
+    # An owned residence: grown on the same sampled months as everything else
+    # when the panel carries a housing series, so its outcome and the market's
+    # come from one path. It never funds a withdrawal and never enters
+    # `balance`, so it cannot rescue a failing path.
+    house_nominal = None          # deflated to real once cum_inflation exists
+    house_flat = None
+    if cfg.house_value > 0:
+        hp = (
+            panel["us_housing"].reindex(window).to_numpy(dtype=float)
+            if "us_housing" in panel.columns
+            else None
+        )
+        # The housing series can end a month or two before the others (its
+        # source publishes on a lag). Those edge months contribute no growth;
+        # a materially incomplete series falls back to the flat rate instead.
+        if hp is not None and np.isnan(hp).mean() < 0.02:
+            house_nominal = cfg.house_value * np.prod(
+                1.0 + np.nan_to_num(hp)[months], axis=1
+            )
+        else:
+            house_flat = (
+                cfg.house_value * (1.0 + cfg.house_real_growth) ** cfg.years
+            )
     path_returns = returns_hist[months]  # (n_paths, n_months, n_assets)
     if eff_adj or cfg.fee_annual:
         vals = [eff_adj.get(a, 0.0) for a in assets]
@@ -1557,8 +1584,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             else None
         ),
         house_terminal_real=(
-            cfg.house_value * (1.0 + cfg.house_real_growth) ** cfg.years
-            if cfg.house_value > 0 else None
+            house_nominal / cum_inflation[:, -1]
+            if house_nominal is not None
+            else (np.full(n_paths, house_flat) if house_flat is not None else None)
         ),
         ladder_annual=ladder_annual_total or None,
         ladder_annual_start=ladder_annual_first or None,

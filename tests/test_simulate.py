@@ -1,5 +1,7 @@
 """Unit tests for the simulation engine using a small synthetic panel."""
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -445,9 +447,9 @@ def test_residence_adds_to_the_estate_without_touching_the_plan():
     assert withhouse.success_rate == plain.success_rate
     assert np.allclose(withhouse.balance, plain.balance)
     assert plain.house_terminal_real is None
-    # default 0.75%/yr real over ten years
+    # no us_housing column in this panel, so the flat rate applies
     assert withhouse.house_terminal_real == pytest.approx(
-        500_000.0 * 1.0075 ** 10
+        np.full(300, 500_000.0 * 1.0075 ** 10)
     )
 
 
@@ -459,4 +461,33 @@ def test_residence_growth_rate_is_configurable():
     cfg = SimConfig(allocation={"us_equities": 1.0}, initial=1e6, years=20,
                     n_sims=20, seed=1, house_value=1_000_000.0,
                     house_real_growth=0.0)
-    assert simulate(panel, cfg).house_terminal_real == pytest.approx(1_000_000.0)
+    assert simulate(panel, cfg).house_terminal_real == pytest.approx(
+        np.full(20, 1_000_000.0)
+    )
+
+
+def test_residence_is_sampled_jointly_when_the_panel_has_housing():
+    # With a us_housing column the residence is grown on the SAME drawn months
+    # as the portfolio, so its outcome varies across paths and correlates with
+    # the market rather than being a constant added to every percentile.
+    idx = pd.period_range("1960-01", periods=480, freq="M")
+    rng = np.random.default_rng(3)
+    eq = rng.normal(0.005, 0.04, 480)
+    panel = pd.DataFrame({
+        "us_equities": eq,
+        "inflation": np.zeros(480),
+        # housing moves with equities here, so the correlation must show up
+        "us_housing": 0.5 * eq + rng.normal(0.0, 0.004, 480),
+    }, index=idx)
+    cfg = SimConfig(allocation={"us_equities": 1.0}, initial=1e6, years=10,
+                    n_sims=500, seed=5, house_value=1_000_000.0,
+                    withdrawal=Withdrawal("fixed_real", rate=0.03))
+    r = simulate(panel, cfg)
+    h = np.asarray(r.house_terminal_real)
+    assert h.shape == (500,)
+    assert h.std() > 1.0                       # not a constant
+    assert np.corrcoef(h, r.real_balance[:, -1])[0, 1] > 0.3
+    # and it still cannot change the plan
+    plain = simulate(panel, replace(cfg, house_value=0.0))
+    assert r.success_rate == plain.success_rate
+    assert np.allclose(r.balance, plain.balance)

@@ -547,18 +547,32 @@ def print_summary(result: SimResult, real: bool = True) -> None:
         ("95th pct", "terminal_p95"),
     ]:
         print(f"    {label}  {_dollars(s[key]):>10}")
-    if result.house_terminal_real:
-        h = result.house_terminal_real
+    if result.house_terminal_real is not None:
+        h = np.asarray(result.house_terminal_real)
         cfg0 = result.config
-        print(
-            f"  Residence (owned throughout, never spent): "
-            f"{_dollars(cfg0.house_value)} today grows to {_dollars(h)} real at "
-            f"{cfg0.house_real_growth:.2%}/yr, added to every estate above"
+        sampled = float(h.std()) > 1e-6
+        hp = np.percentile(h, [5, 50, 95])
+        how = (
+            "grown on the same sampled months as the portfolio"
+            if sampled
+            else f"grown at a flat {cfg0.house_real_growth:.2%}/yr real"
         )
         print(
-            f"    estate incl. residence: 5th {_dollars(s['terminal_p5'] + h)}"
-            f" · median {_dollars(s['terminal_median'] + h)}"
-            f" · 95th {_dollars(s['terminal_p95'] + h)}"
+            f"  Residence (owned throughout, never spent): "
+            f"{_dollars(cfg0.house_value)} today, {how} · real value at the "
+            f"horizon: 5th {_dollars(hp[0])} · median {_dollars(hp[1])} · "
+            f"95th {_dollars(hp[2])}"
+        )
+        infl = result.cum_inflation[:, -1]
+        combined = (
+            result.real_balance[:, -1] + h
+            if real
+            else result.balance[:, -1] + h * infl
+        )
+        cp = np.percentile(combined, [5, 50, 95])
+        print(
+            f"    estate incl. residence, per path: 5th {_dollars(cp[0])}"
+            f" · median {_dollars(cp[1])} · 95th {_dollars(cp[2])}"
         )
     if result.account_terminal is not None:
         term = result.account_terminal

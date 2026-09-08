@@ -371,6 +371,67 @@ def bond_returns_from_yields(yields: pd.Series, maturity_years: int = 10) -> pd.
     return ret.rename("us_bonds_10yr").dropna()
 
 
+
+def house_price_index(refresh: bool = False) -> pd.Series:
+    """Monthly US house price index (nominal), 1890 to date.
+
+    Case-Shiller national (FRED CSUSHPINSA) is the monthly spine from 1987.
+    FHFA (USSTHPI, quarterly) covers 1975-86 and the Jorda-Schularick-Taylor
+    annual series covers 1890-1974; both are interpolated geometrically to
+    monthly and level-adjusted at each splice.
+
+    Interpolation invents within-period smoothness, which would matter for an
+    asset that is rebalanced or sold, because the path decides what gets
+    realised. It does not matter for a residence held to the end of the
+    horizon: only the cumulative return is consumed, and interpolation
+    preserves each period's endpoints exactly. What the splice does buy is
+    joint sampling - the housing months come from the same historical months
+    as every other series, so a bad housing outcome lands in the same drawn
+    path as the market conditions that produced it.
+    """
+    import io as _io
+
+    cs = fetch_fred("CSUSHPINSA", refresh).dropna()
+    fh = fetch_fred("USSTHPI", refresh).dropna()
+
+    from .reconstruct import _load_jst
+
+    jst = _load_jst(refresh)
+    us = jst[jst["country"] == "USA"].set_index("year")["hpnom"].dropna()
+    ann = pd.Series(
+        us.to_numpy(),
+        index=pd.PeriodIndex([f"{int(y)}-12" for y in us.index], freq="M"),
+    )
+
+    def to_monthly(idx: pd.Series) -> pd.Series:
+        """Geometric interpolation onto a monthly grid, endpoints preserved."""
+        full = pd.period_range(idx.index[0], idx.index[-1], freq="M")
+        return np.exp(
+            np.log(idx.astype(float)).reindex(full).interpolate("index")
+        ).rename("hpi")
+
+    fh_m, ann_m = to_monthly(fh), to_monthly(ann)
+
+    def splice(base: pd.Series, earlier: pd.Series) -> pd.Series:
+        """Scale `earlier` to meet `base` at their first common month."""
+        common = base.index.intersection(earlier.index)
+        if len(common) == 0:
+            return base
+        at = common.min()
+        scaled = earlier * (float(base.loc[at]) / float(earlier.loc[at]))
+        return pd.concat([scaled[scaled.index < at], base]).sort_index()
+
+    return splice(splice(cs, fh_m), ann_m).rename("house_price_index")
+
+
+def fetch_house_returns(refresh: bool = False) -> pd.Series:
+    """Monthly nominal capital-gain returns on US housing.
+
+    Capital gain only, not total return: an owner-occupier consumes the rent
+    yield by living there, so it never accrues to the estate.
+    """
+    return house_price_index(refresh).pct_change().dropna().rename("us_housing")
+
 def build_panel(refresh: bool = False) -> pd.DataFrame:
     """Fetch everything and assemble the monthly joint panel."""
     us = fetch_us_factors(refresh)
@@ -398,6 +459,7 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
 
     gs10 = treasury_yield_history(refresh)
     bonds = bond_returns_from_yields(gs10)
+    housing = fetch_house_returns(refresh)
     gs20 = long_treasury_yield_history(refresh)
     long_bonds = bond_returns_from_yields(gs20, maturity_years=20).rename(
         "us_bonds_20yr"
@@ -437,7 +499,7 @@ def build_panel(refresh: bool = False) -> pd.DataFrame:
         _apply_custom_override(str(s.name), s)
         for s in (us_eq, small, intl, bonds, long_bonds, munis, cash)
     ]
-    panel = pd.concat(series + [inflation], axis=1).sort_index()
+    panel = pd.concat(series + [inflation, housing], axis=1).sort_index()
     for name, series in income.items():
         panel[name] = series.reindex(panel.index).ffill()
     panel.index.name = "month"
