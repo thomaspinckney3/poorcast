@@ -144,3 +144,32 @@ def test_optimize_tolerance_rejected_outside_household_mode(capsys, monkeypatch)
     rc = cli.main(["run", "--allocation", "us_equities=60,us_bonds_10yr=40",
                    "--optimize-tolerance", "2", "--horizons", "1", "--sims", "5", "--no-charts"])
     assert rc == 2 and "household" in capsys.readouterr().out
+
+
+def test_chart_caption_survives_two_dollar_figures(tmp_path, monkeypatch):
+    """Matplotlib reads a pair of unescaped `$` as mathtext and fails to parse.
+
+    The run description carries a dollar figure per spending rule, so whether
+    two of them land on one wrapped line — and the whole PNG is lost after the
+    simulation has already run — depends on where the text happens to wrap.
+    A `%` between the two is what turns silently-italicised math into a crash:
+    mathtext reads it as a comment and eats the closing `$`.
+    """
+    from poorcast import report
+
+    monkeypatch.setattr(cli.data_mod, "load_panel", lambda: synthetic_panel())
+    monkeypatch.setattr(
+        report,
+        "_describe",
+        lambda result, wrap=False: (
+            "withdrawing $487,500/yr (inflation-adjusted), flexed down to "
+            "69% in down markets, floor $337,500"
+        ),
+    )
+    rc = cli.main([
+        "run", "--allocation", "us_equities=60,us_bonds_10yr=40",
+        "--withdraw", "40000", "--horizons", "2", "--sims", "20", "--seed", "1",
+        "--out", str(tmp_path),
+    ])
+    assert rc == 0
+    assert list(tmp_path.glob("*.png"))

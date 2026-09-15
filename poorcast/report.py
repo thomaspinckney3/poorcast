@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -65,6 +66,17 @@ def _dollars(x: float, _pos=None) -> str:
     return f"${x:.3g}"
 
 
+def _literal(s: str) -> str:
+    """Escape dollar signs so matplotlib draws text rather than parsing math.
+
+    Matplotlib reads a pair of unescaped `$` as a mathtext expression, so any
+    caption carrying two dollar figures is parsed as math and raises. Whether
+    it fires depends on where the text happens to wrap, which makes it a
+    lurking failure rather than an obvious one.
+    """
+    return s.replace("$", r"\$")
+
+
 def fan_chart(result: SimResult, ax=None, real: bool = True):
     """Percentile bands of portfolio balance over time (sequential blue ramp)."""
     if ax is None:
@@ -79,7 +91,7 @@ def fan_chart(result: SimResult, ax=None, real: bool = True):
 
     for y_end, txt in [(p95[-1], "95th"), (p50[-1], "median"), (p5[-1], "5th")]:
         ax.annotate(
-            f" {txt}: {_dollars(y_end)}",
+            _literal(f" {txt}: {_dollars(y_end)}"),
             (years[-1], y_end),
             fontsize=8,
             color=INK_2,
@@ -259,7 +271,7 @@ def terminal_hist(result: SimResult, ax=None, real: bool = True):
     if depleted_share > 0:
         title += f", {depleted_share:.1%} of paths depleted"
     title += ")"
-    ax.set_title(title)
+    ax.set_title(_literal(title))
     ax.set_ylabel("Paths")
     ax.grid(axis="x", visible=False)
     return ax
@@ -282,7 +294,15 @@ def save_report(result: SimResult, out_dir: Path, tag: str, real: bool = True) -
         if has_failures:
             failure_hist(result, axes[2])
     terminal_hist(result, axes[-1], real=real)
-    fig.suptitle(_describe(result, wrap=True), fontsize=9, color=INK_2, y=0.995)
+    # Wrap to the figure's width: a multi-account household's description runs
+    # to several hundred characters per line and is otherwise cut off at both
+    # margins. tight_layout measures the suptitle and makes room for it.
+    caption = "\n".join(
+        line
+        for part in _describe(result, wrap=True).split("\n")
+        for line in textwrap.wrap(part, width=118)
+    )
+    fig.suptitle(_literal(caption), fontsize=9, color=INK_2, y=0.995)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     path = out_dir / f"{tag}.png"
     fig.savefig(path)
