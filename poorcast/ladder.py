@@ -35,12 +35,24 @@ class LadderSpec:
     # (see build_ladder_targets) pays only later rungs' coupons before its
     # first maturity, so the profile is not flat and must be carried per year.
     payouts: tuple = ()
+    # Real dollars the ladder was BUILT to deliver in each year. Equal to
+    # `payouts` wherever a rung funds the year; below it in the early years of
+    # a partial-horizon ladder, which pays later rungs' coupons it was never
+    # asked to provide. The buy list solves against this, not against payouts,
+    # or those incidental coupons buy rungs of their own.
+    targets: tuple = ()
 
     def payout_real(self) -> np.ndarray:
         """Real income delivered in each year 1..years."""
         if self.payouts:
             return np.array(self.payouts, dtype=float)
         return np.full(self.years, self.annual, dtype=float)
+
+    def target_real(self) -> np.ndarray:
+        """Real income the ladder was built to deliver in each year."""
+        if self.targets:
+            return np.array(self.targets, dtype=float)
+        return self.payout_real()
 
     def coupon_income_real(self) -> np.ndarray:
         """Real coupon income received during year t (0-indexed)."""
@@ -98,9 +110,10 @@ def _build(annual, years: int, yields: np.ndarray, taxable: bool) -> LadderSpec:
     cost = float(faces.sum())
     rep = float((yields * faces).sum() / cost)
     pay = payouts_from_faces(faces, yields)
+    tgt = np.broadcast_to(np.asarray(annual, dtype=float), (years,))
     return LadderSpec(annual=float(np.min(pay)), years=years, real_yield=rep,
                       cost=cost, faces=tuple(faces), coupons=tuple(yields),
-                      taxable=taxable, payouts=tuple(pay))
+                      taxable=taxable, payouts=tuple(pay), targets=tuple(tgt))
 
 
 def build_ladder(
@@ -219,10 +232,14 @@ def match_cusips(n_rungs: int, tips: list[dict], base_year: int) -> list[dict | 
 
 
 def build_available_ladder(
-    annual: float, avail: list[int], coupons: dict[int, float], horizon: int
+    annual, avail: list[int], coupons: dict[int, float], horizon: int
 ) -> list[dict]:
     """Gap-adjusted rung faces when TIPS mature only in `avail` years (1-based
     offsets), covering spending years 1..horizon.
+
+    `annual` is the real income targeted in each year: a scalar for a level
+    ladder, or one value per year for a shaped or maturity-split one, whose
+    rungs are not all the same size.
 
     Each spending year is funded by the nearest available maturity at or
     before it; a year with no maturing bond is covered by holding the prior
@@ -244,17 +261,34 @@ def build_available_ladder(
     for y in range(1, horizon + 1):
         earlier = [a for a in avail if a <= y]
         covers[max(earlier)].append(y) if earlier else covers[avail[0]].append(y)
+    tgt = np.asarray(annual, dtype=float)
+    if tgt.ndim == 0:
+        tgt = np.full(horizon, float(tgt))
+    elif len(tgt) < horizon:
+        raise ValueError(
+            f"need a target for each of {horizon} years, got {len(tgt)}"
+        )
+    else:
+        # Years past the last issuable maturity are the caller's bridge tail.
+        tgt = tgt[:horizon]
     faces: dict[int, float] = {}
     coup_later = 0.0  # sum of c_k * F_k for rungs longer than the current one
     for a in reversed(avail):
         L = len(covers[a])
         c = coupons.get(a, 0.0)
-        f = L * (annual - coup_later) / (1 + c)
+        # The rung funds every year it covers; coupons from longer rungs
+        # arrive in each of those years, its own principal and coupon once.
+        need = float(sum(tgt[y - 1] for y in covers[a]))
+        # Floored at zero, as rung_faces is: a year already covered by longer
+        # rungs' coupons buys no rung of its own. Without the floor a
+        # maturity-split account's empty early years take negative faces.
+        f = max((need - L * coup_later) / (1 + c), 0.0)
         faces[a] = f
         coup_later += c * f
     return [
         {"offset": a, "coupon": coupons.get(a, 0.0), "covers": covers[a], "face": faces[a]}
         for a in avail
+        if faces[a] > 0
     ]
 
 
@@ -266,6 +300,23 @@ def model_clean_price(coupon: float, ytm: float, years: float) -> float:
     if abs(ytm) < 1e-9:
         return 100.0 * (1 + coupon * years)
     return 100.0 * (coupon / ytm * (1 - (1 + ytm) ** -years) + (1 + ytm) ** -years)
+
+
+def _profile_str(spec: "LadderSpec") -> str:
+    """How the ladder pays over its life: flat, or first year to last.
+
+    A spending-shaped ladder declines by design and a maturity-split account
+    pays only coupons before its first maturity, so quoting one number for
+    every year - which is `spec.annual`, the MINIMUM - misreports both.
+    """
+    pay = spec.payout_real()
+    if np.allclose(pay, pay[0]):
+        return f"${pay[0]:,.0f}/yr real for {spec.years}y"
+    out = f"${pay[0]:,.0f}/yr real in year 1 to ${pay[-1]:,.0f} in year {spec.years}"
+    low = pay.min()
+    if low < min(pay[0], pay[-1]) - 0.5:
+        out += f" (low ${low:,.0f})"
+    return out
 
 
 def format_ladder_gap_adjusted(
@@ -284,14 +335,13 @@ def format_ladder_gap_adjusted(
     buildable = min(spec.years, last_avail - base_year)
     avail_off = [y - base_year for y in avail_by_year if base_year < y <= base_year + buildable]
     coupons = {y - base_year: avail_by_year[y]["coupon"] for y in avail_by_year}
-    rungs = build_available_ladder(spec.annual, avail_off, coupons, buildable)
+    rungs = build_available_ladder(
+        spec.target_real(), avail_off, coupons, buildable
+    )
 
     out = []
     head = f"TIPS ladder{': ' + label if label else ''} (gap-adjusted to real CUSIPs)"
-    out.append(
-        f"{head} — ${spec.annual:,.0f}/yr real for {spec.years}y; "
-        f"buy {len(rungs)} securities:"
-    )
+    out.append(f"{head} — {_profile_str(spec)}; buy {len(rungs)} securities:")
     import datetime as _dt
     px = price_curve is not None
     hdr = f"  {'CUSIP':>11}  {'matures':>10}  {'real face $':>13}  {'coupon':>7}"
@@ -349,8 +399,8 @@ def format_ladder(
     head = f"TIPS ladder{': ' + label if label else ''}"
     acct = "taxable" if getattr(spec, "taxable", False) else "tax-deferred"
     out.append(
-        f"{head} — ${spec.cost:,.0f} cost -> ${spec.annual:,.0f}/yr real for "
-        f"{spec.years}y (cost-weighted real yield {spec.real_yield:.2%}, held {acct})"
+        f"{head} — ${spec.cost:,.0f} cost -> {_profile_str(spec)} "
+        f"(cost-weighted real yield {spec.real_yield:.2%}, held {acct})"
     )
     if cusips is None:
         out.append(f"  {'matures':>8}  {'real face $':>13}  {'coupon':>7}")
@@ -382,9 +432,14 @@ def format_ladder(
                 f"  ({gaps} rung(s) have no maturing TIPS — fill with an adjacent "
                 "maturity, or bridge/hold cash for that year)"
             )
+    pay = spec.payout_real()
+    delivers = (
+        f"each year delivers ${pay[0]:,.0f} real"
+        if np.allclose(pay, pay[0])
+        else f"delivers {_profile_str(spec)}"
+    )
     out.append(
-        f"  {'TOTAL':>8}  {sum(r['face'] for r in rows):>13,.0f}   "
-        f"(each year delivers ${spec.annual:,.0f} real)"
+        f"  {'TOTAL':>8}  {sum(r['face'] for r in rows):>13,.0f}   ({delivers})"
     )
     return "\n".join(out)
 
@@ -552,3 +607,63 @@ def maturity_split(
     annual = 0.5 * (lo + hi)
     d, t = profile(annual)
     return annual, d, t
+
+
+def spending_shape(years: int, decline: float, decline_start_year: int) -> np.ndarray:
+    """Per-year payout multipliers that follow a declining spending target.
+
+    A level ladder over-insures the late years and under-insures the early
+    ones, where sequence risk lives. Matching the profile the budget actually
+    follows buys more income early for the same money.
+    """
+    shape = np.ones(years)
+    for t in range(years):
+        if t >= decline_start_year:
+            shape[t] = (1.0 - decline) ** (t - decline_start_year + 1)
+    return shape
+
+
+def household_targets(
+    budgets: dict[str, float], years: int, curve, *,
+    placement: str = "prorata", shape: "np.ndarray | None" = None,
+    age: int | None = None, deferred_from_age: int | None = None,
+    tail_yield: float | None = None,
+) -> dict[str, np.ndarray]:
+    """Per-account payout targets for one household ladder.
+
+    `budgets` maps account kind to the dollars that account puts into the
+    ladder. Under "prorata" each account funds its own ladder independently
+    and this returns {} — there is nothing to assign. Under "maturity" the
+    household holds a single ladder whose maturities are assigned by account,
+    and this returns {kind: target vector}.
+
+    Both the simulator and the `ladder` buy list go through here, so the
+    securities the household is told to buy are the ones the run priced.
+    """
+    if placement not in ("prorata", "maturity"):
+        raise ValueError(
+            f"ladder_placement must be prorata/maturity, got {placement!r}"
+        )
+    if placement == "prorata":
+        return {}
+    from .tax import RMD_START_AGE
+
+    if budgets.get("traditional", 0.0) <= 0 or "taxable" not in budgets:
+        raise ValueError(
+            "ladder_placement='maturity' needs a taxable and a traditional "
+            "account, with a tips_ladder weight on the traditional one"
+        )
+    if age is None:
+        raise ValueError("ladder_placement='maturity' needs `age`")
+    start = deferred_from_age or RMD_START_AGE
+    if start < age:
+        raise ValueError(
+            f"ladder_deferred_from_age {start} is before the household's "
+            f"starting age {age}"
+        )
+    first = min(max(start - age + 1, 1), years)
+    _, deferred, taxable = maturity_split(
+        sum(budgets.values()), budgets["traditional"], years, curve, first,
+        tail_yield=tail_yield, shape=shape,
+    )
+    return {"traditional": deferred, "taxable": taxable}

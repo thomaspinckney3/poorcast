@@ -658,9 +658,10 @@ def _run_ladder(args) -> int:
     """poorcast ladder: print the rung-by-rung buy list for a ladder, either
     from explicit --annual/--cost + pricing, or from a plan config's
     tips_ladder allocations."""
-    from .ladder import (build_ladder, build_ladder_curve, current_real_curve,
-                         format_ladder, format_ladder_gap_adjusted,
-                         outstanding_tips)
+    from .ladder import (build_ladder, build_ladder_curve, build_ladder_targets,
+                         current_real_curve, format_ladder,
+                         format_ladder_gap_adjusted, household_targets,
+                         outstanding_tips, spending_shape)
 
     curve = current_real_curve() if args.curve else None
     tail = None if args.tail is None else args.tail / 100.0
@@ -676,17 +677,8 @@ def _run_ladder(args) -> int:
               f"(maturities {tips[0]['maturity'].year}-{tips[-1]['maturity'].year}, "
               f"as of {datetime.date.today().isoformat()}).\n")
 
-    def one(annual=None, cost=None, years=None, taxable=False, label=""):
+    def emit(spec, label=""):
         import datetime
-        yrs = years or args.years
-        if curve is not None:
-            unit = build_ladder_curve(1.0, yrs, curve, taxable=taxable, tail_yield=tail)
-            a = annual if annual is not None else cost / unit.cost
-            spec = build_ladder_curve(a, yrs, curve, taxable=taxable, tail_yield=tail)
-        else:
-            unit = build_ladder(1.0, yrs, args.lyield / 100.0, taxable=taxable)
-            a = annual if annual is not None else cost / unit.cost
-            spec = build_ladder(a, yrs, args.lyield / 100.0, taxable=taxable)
         if tips is not None:
             pcurve = current_real_curve() if args.price else None
             price_curve = ({m: pcurve[m] for m in pcurve} if pcurve else None)
@@ -696,6 +688,18 @@ def _run_ladder(args) -> int:
         else:
             print(format_ladder(spec, label=label))
         return spec
+
+    def one(annual=None, cost=None, years=None, taxable=False, label=""):
+        yrs = years or args.years
+        if curve is not None:
+            unit = build_ladder_curve(1.0, yrs, curve, taxable=taxable, tail_yield=tail)
+            a = annual if annual is not None else cost / unit.cost
+            spec = build_ladder_curve(a, yrs, curve, taxable=taxable, tail_yield=tail)
+        else:
+            unit = build_ladder(1.0, yrs, args.lyield / 100.0, taxable=taxable)
+            a = annual if annual is not None else cost / unit.cost
+            spec = build_ladder(a, yrs, args.lyield / 100.0, taxable=taxable)
+        return emit(spec, label=label)
 
     if args.config:
         from .config import ConfigError, load_config
@@ -718,18 +722,61 @@ def _run_ladder(args) -> int:
         if "tips_ladder_tail" in cfg:
             tail = cfg["tips_ladder_tail"] / 100.0
         lyrs = cfg.get("ladder_years") or int(str(cfg.get("horizons", "30")).split(",")[0])
-        found = False
-        for a in accounts:
-            wl = (a.get("allocation") or {}).get("tips_ladder", 0.0)
-            if wl > 0:
-                found = True
-                one(cost=wl * a["balance"], years=lyrs,
-                    taxable=(a["kind"] == "taxable"),
-                    label=f"{a['kind']} account, ${wl * a['balance']:,.0f}")
-                print()
-        if not found:
+        budgets = {
+            a["kind"]: (a.get("allocation") or {}).get("tips_ladder", 0.0) * a["balance"]
+            for a in accounts
+            if (a.get("allocation") or {}).get("tips_ladder", 0.0) > 0
+        }
+        if not budgets:
             print("no tips_ladder allocations found in the config")
             return 2
+        # Payout shape and account placement are settled in the plan file. The
+        # buy list has to honour both or it prices a different ladder than the
+        # run does, and the household buys securities the simulation never saw.
+        shape = None
+        if cfg.get("ladder_shape") == "spending":
+            if "spend_decline" not in cfg or cfg.get("age") is None:
+                print("error: [tips_ladder] shape = 'spending' needs `age` and a "
+                      "[withdrawal] decline to follow")
+                return 2
+            rate, at_age = parse_at_age(str(cfg["spend_decline"]))
+            start_year = 0 if at_age is None else max(at_age - cfg["age"], 0)
+            shape = spending_shape(lyrs, rate / 100.0, start_year)
+        curve_or_y = curve if curve is not None else args.lyield / 100.0
+        try:
+            placed = household_targets(
+                budgets, lyrs, curve_or_y,
+                placement=cfg.get("ladder_placement") or "prorata",
+                shape=shape, age=cfg.get("age"),
+                deferred_from_age=cfg.get("ladder_deferred_from_age"),
+                tail_yield=tail,
+            )
+        except ValueError as e:
+            print(f"error: {e}")
+            return 2
+        for kind, budget in budgets.items():
+            taxable = kind == "taxable"
+            if kind in placed:
+                targets = placed[kind]
+                if float(targets.max()) <= 0:
+                    continue  # the whole ladder fits in the other account
+            elif shape is not None:
+                unit = build_ladder_targets(
+                    shape, lyrs, curve_or_y, taxable=taxable, tail_yield=tail
+                )
+                targets = shape * (budget / unit.cost)
+            else:
+                one(cost=budget, years=lyrs, taxable=taxable,
+                    label=f"{kind} account, ${budget:,.0f}")
+                print()
+                continue
+            emit(
+                build_ladder_targets(
+                    targets, lyrs, curve_or_y, taxable=taxable, tail_yield=tail
+                ),
+                label=f"{kind} account, ${budget:,.0f}",
+            )
+            print()
         return 0
 
     if (args.annual is None) == (args.cost is None):

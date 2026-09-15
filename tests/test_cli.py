@@ -173,3 +173,48 @@ def test_chart_caption_survives_two_dollar_figures(tmp_path, monkeypatch):
     ])
     assert rc == 0
     assert list(tmp_path.glob("*.png"))
+
+
+def _ladder_plan(tmp_path, extra=""):
+    plan = tmp_path / "plan.toml"
+    plan.write_text(
+        "age = 55\nhorizons = [40]\n"
+        "[[account]]\ntype = 'taxable'\nbalance = 1_000_000\n"
+        "allocation = { us_equities = 50, tips_ladder = 50 }\n"
+        "[[account]]\ntype = 'traditional'\nbalance = 200_000\n"
+        "allocation = { tips_ladder = 100 }\n"
+        "[withdrawal]\namount = 100_000\ndecline = { rate = 1, from = 75 }\n"
+        f"[tips_ladder]\nyield = 2.0\n{extra}\n"
+    )
+    return plan
+
+
+def test_buy_list_honours_maturity_placement(tmp_path, capsys):
+    """The buy list has to place rungs where the run places them.
+
+    Pro-rata gives every account the whole maturity range; maturity placement
+    gives the tax-deferred account only the longest rungs, which is the point
+    of the decision — a buy list that ignores it spends the household's scarce
+    shelter on the rungs least worth sheltering.
+    """
+    plan = _ladder_plan(tmp_path, "placement = 'maturity'")
+    assert cli.main(["ladder", "--config", str(plan)]) == 0
+    deferred = capsys.readouterr().out.split("traditional account")[1]
+    early = [ln for ln in deferred.splitlines() if ln.strip().startswith("20")]
+    # Years before the RMD window (age 73, ladder year 19) buy nothing.
+    assert all(float(ln.split()[1].replace(",", "")) == 0 for ln in early[:18])
+    assert any(float(ln.split()[1].replace(",", "")) > 0 for ln in early[18:])
+
+
+def test_buy_list_honours_the_spending_shape(tmp_path, capsys):
+    """A spending-shaped ladder pays more early and declines; a level one does
+    not. The header reports the profile rather than the minimum."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    level = _ladder_plan(tmp_path / "a")
+    assert cli.main(["ladder", "--config", str(level)]) == 0
+    assert "/yr real for 40y" in capsys.readouterr().out
+
+    shaped = _ladder_plan(tmp_path / "b", "shape = 'spending'")
+    assert cli.main(["ladder", "--config", str(shaped)]) == 0
+    assert "in year 1 to" in capsys.readouterr().out

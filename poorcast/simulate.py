@@ -616,57 +616,39 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
         if cfg.ladder_years is not None and cfg.ladder_years < 1:
             raise ValueError(f"ladder_years must be >= 1, got {cfg.ladder_years}")
         lyears = cfg.ladder_years or cfg.years
-        if cfg.ladder_placement not in ("prorata", "maturity"):
-            raise ValueError(
-                f"ladder_placement must be prorata/maturity, got "
-                f"{cfg.ladder_placement!r}"
-            )
         if cfg.ladder_shape not in ("level", "spending"):
             raise ValueError(
                 f"ladder_shape must be level/spending, got {cfg.ladder_shape!r}"
             )
         shape = np.ones(lyears)
         if cfg.ladder_shape == "spending":
+            from .ladder import spending_shape
+
             _w = cfg.withdrawal
             if _w is None or _w.kind != "fixed_real" or _w.decline <= 0:
                 raise ValueError(
                     "ladder_shape='spending' needs a fixed-real withdrawal with "
                     "a spending decline to follow"
                 )
-            d0 = _w.decline_start_month // 12
-            for t in range(lyears):
-                if t >= d0:
-                    shape[t] = (1.0 - _w.decline) ** (t - d0 + 1)
-        placed: dict[int, np.ndarray] = {}
-        if cfg.ladder_placement == "maturity":
-            from .ladder import build_ladder_targets, maturity_split
-            from .tax import RMD_START_AGE
-
-            tax_j = kinds.index("taxable") if "taxable" in kinds else None
-            trad_j = kinds.index("traditional") if "traditional" in kinds else None
-            if trad_j is None or tax_j is None or lad_w[trad_j] <= 0:
-                raise ValueError(
-                    "ladder_placement='maturity' needs a taxable and a "
-                    "traditional account, with a tips_ladder weight on the "
-                    "traditional one"
-                )
-            if cfg.age is None:
-                raise ValueError("ladder_placement='maturity' needs `age`")
-            budgets = {j: lad_w[j] * sp.balance for j, sp in enumerate(specs)}
-            total_b = sum(budgets.values())
-            _from = cfg.ladder_deferred_from_age or RMD_START_AGE
-            if _from < cfg.age:
-                raise ValueError(
-                    f"ladder_deferred_from_age {_from} is before the "
-                    f"household's starting age {cfg.age}"
-                )
-            first = min(max(_from - cfg.age + 1, 1), lyears)
-            curve_or_y = cfg.ladder_curve or cfg.ladder_yield
-            _, d_t, t_t = maturity_split(
-                total_b, budgets[trad_j], lyears, curve_or_y, first,
-                tail_yield=cfg.ladder_tail_yield, shape=shape,
+            shape = spending_shape(
+                lyears, _w.decline, _w.decline_start_month // 12
             )
-            placed = {trad_j: d_t, tax_j: t_t}
+        from .ladder import household_targets
+
+        budgets = {
+            kinds[j]: lad_w[j] * sp.balance
+            for j, sp in enumerate(specs)
+            if lad_w[j] > 0
+        }
+        by_kind = household_targets(
+            budgets, lyears, cfg.ladder_curve or cfg.ladder_yield,
+            placement=cfg.ladder_placement, shape=shape, age=cfg.age,
+            deferred_from_age=cfg.ladder_deferred_from_age,
+            tail_yield=cfg.ladder_tail_yield,
+        )
+        placed: dict[int, np.ndarray] = {
+            kinds.index(k): t for k, t in by_kind.items()
+        }
         for i, (s, wl) in enumerate(zip(specs, lad_w)):
             if wl <= 0:
                 continue
