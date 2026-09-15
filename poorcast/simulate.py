@@ -960,7 +960,16 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
     # Traditional-account state: nominal distributions this tax year (spending
     # withdrawals, later the tax payment itself), and the balance at the start
     # of the year that RMDs are computed from.
-    dist_acc = np.zeros(n_paths)
+    dist_acc = np.zeros(n_paths)   # TAXABLE ordinary income from distributions
+    # Gross distributions this tax year. An RMD is satisfied by the gross
+    # dollars that leave the account, not by the taxable portion of them, so
+    # the two cannot share one accumulator.
+    dist_gross = np.zeros(n_paths)
+    # After-tax dollars sitting INSIDE the traditional account: a deemed RMD
+    # that was taxed but could not be transferred out (no taxable account, or
+    # an IRA too illiquid to move it - a 100%-ladder 401(k) is both). Without
+    # this they are taxed again when finally withdrawn.
+    trad_basis = np.zeros(n_paths)
     other_ord_acc = np.zeros(n_paths)  # taxable outside income since last settlement
     year_start_bal = np.full(n_paths, initial_total)
     # 10% penalty on early (pre-59.5) retirement-account draws: traditional
@@ -1033,6 +1042,15 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             if k // 12 < ira_ladder.years:
                 ira_lad_val[k] = prin[k // 12]
 
+    def distribute(amount):
+        """Book a gross traditional distribution: it satisfies the RMD in
+        full, but only the part beyond any after-tax basis is income."""
+        nonlocal dist_acc, dist_gross, trad_basis
+        dist_gross = dist_gross + amount
+        from_basis = np.minimum(amount, trad_basis)
+        trad_basis = trad_basis - from_basis
+        dist_acc = dist_acc + (amount - from_basis)
+
     def prorata_flow(acct: _Acct, scale: np.ndarray) -> None:
         """Apply a pro-rata sale (scale<1) or buy (scale>1) to one account's
         holdings+basis, booking realized gains on the sale portion."""
@@ -1070,7 +1088,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             ira_val = ira_val + acct_lad_val[trad_i][m + 1] * cum_inflation[:, m + 1]
         if ira_lad_val is not None:
             ira_val = ira_val + ira_lad_val[m + 1] * cum_inflation[:, m + 1]
-        deemed = np.minimum(np.maximum(rmd - dist_acc, 0.0), ira_val)
+        deemed = np.minimum(np.maximum(rmd - dist_gross, 0.0), ira_val)
         if taxed:
             move = np.minimum(deemed, trad_tot)
             with np.errstate(invalid="ignore", divide="ignore"):
@@ -1087,6 +1105,11 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             buy = shares * move[:, None]
             tx.holdings += buy
             tx.basis += buy
+        else:
+            move = 0.0
+        # Recognized but still in the account: already taxed, so record it as
+        # after-tax basis rather than taxing it a second time on withdrawal.
+        trad_basis[:] = trad_basis + (deemed - move)
         return deemed
 
     # With rung income, depletion means unmet spending, not zero liquid
@@ -1135,6 +1158,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                 )
             if ira_lad_val is not None:
                 year_start_bal = year_start_bal + ira_lad_val[m] * cum_inflation[:, m]
+            # Dollars already distributed for RMD purposes but still sitting in
+            # the account (recognized in kind, nowhere to transfer them to) must
+            # not be counted again in the base for future RMDs.
+            year_start_bal = np.maximum(year_start_bal - trad_basis, 0.0)
 
         # Withdrawal / contribution at the start of the month, pro-rata across
         # holdings so the flow itself doesn't rebalance the portfolio.
@@ -1203,7 +1230,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             for i in sched_idx:
                 draws[i] = draws[i] + pre_draws[i]
         if trad:
-            dist_acc += draws[trad_i]
+            distribute(draws[trad_i])
         if pen_active and m < pen_cut:
             if trad:
                 penalty_acc += 0.10 * draws[trad_i]
@@ -1234,7 +1261,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             if trad and trad_i in acct_ladders:
                 _p = acct_ladders[trad_i].payout_real()
                 pay_t = _p[min(m // 12, len(_p) - 1)] / 12.0 * cum_inflation[:, m]
-                dist_acc += pay_t
+                distribute(pay_t)
                 if pen_active and m < pen_cut:
                     penalty_acc += 0.10 * pay_t
             if pen_active and m < pen_cut:
@@ -1249,7 +1276,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
                         penalty_acc += 0.10 * (pay_r - from_basis)
         if ira_ladder is not None and m < ira_ladder.years * 12:
             pay_i = ira_ladder.annual / 12.0 * cum_inflation[:, m]
-            dist_acc += pay_i
+            distribute(pay_i)
             if pen_active and m < pen_cut:
                 penalty_acc += 0.10 * pay_i
 
@@ -1427,7 +1454,7 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             total_tax_real += _t
             year_tax_real += _t
             if trad:
-                dist_acc += from_trad_pay
+                distribute(from_trad_pay)
 
         # Brackets: one joint annual settlement - taxable investment income
         # and traditional distributions stack through the same brackets and
@@ -1464,7 +1491,9 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             total_tax_real += _t
             year_tax_real += _t
             if trad:
-                dist_acc = from_trad_pay
+                dist_acc = np.zeros(n_paths)
+                dist_gross = np.zeros(n_paths)
+                distribute(from_trad_pay)
 
         # Flat-rate traditional settlement, annual. Withholding semantics:
         # paid from the IRA first (that portion is a further distribution),
@@ -1479,7 +1508,10 @@ def simulate(panel: pd.DataFrame, cfg: SimConfig) -> SimResult:
             _t = paid / cum_inflation[:, m + 1]
             total_tax_real += _t
             year_tax_real += _t
-            dist_acc = from_trad_pay  # the IRA-paid portion is a distribution
+            # the IRA-paid portion is itself a distribution, in the next year
+            dist_acc = np.zeros(n_paths)
+            dist_gross = np.zeros(n_paths)
+            distribute(from_trad_pay)
 
         # Pension-only settlement: tax-free accounts, but taxable outside
         # income still runs through the active regime, annually.

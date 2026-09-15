@@ -132,8 +132,15 @@ def test_rmd_recognized_on_rung_value():
     # Age 80, all-ladder IRA: payouts 1010/yr fall short of the RMD computed
     # on the rungs' full value; the shortfall must still be recognized as
     # taxable income (in-kind distribution), though nothing can transfer.
-    # Year 1: RMD 30300/20.2 = 1500 -> tax 375. Year 2: 29290/19.4 = 1509.79
-    # -> tax 377.45.
+    # Year 1: RMD 30300/20.2 = 1500, all of it income -> tax 375.
+    # Year 2: the 490 recognized in year 1 is after-tax money still sitting in
+    # the account, so it (a) returns as basis in the first 490 of the 1010
+    # payout, leaving 520 of income, and (b) drops out of the RMD base, which
+    # is 29290 - 490 = 28800 -> RMD 1484.54, a 474.54 shortfall. Income
+    # 994.54 -> tax 248.63. Recognizing the shortfall and then taxing the same
+    # dollars again as they paid out was double taxation, and counting them in
+    # the next year's base recognized them twice over: together they cost this
+    # case 128.81 of the 752.45 it used to show.
     panel = make_panel()
     c = cfg(
         years=2,
@@ -146,7 +153,7 @@ def test_rmd_recognized_on_rung_value():
         ladder_years=30,
     )
     r = simulate(panel, c)
-    assert np.allclose(r.total_tax_real, 752.448, atol=0.01)
+    assert np.allclose(r.total_tax_real, 623.634, atol=0.01)
 
 
 def test_zero_liquid_with_covering_income_is_not_depletion():
