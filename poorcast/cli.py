@@ -644,6 +644,29 @@ def _held_assets(cfg: SimConfig, panel) -> list[str]:
     return held
 
 
+def _asset_max_weight(cfg: SimConfig, panel) -> dict[str, float]:
+    """Largest weight each named panel asset ever carries, across the
+    config-level allocation, every account's, and every glidepath endpoint.
+
+    A named asset constrains the sample window whether or not it is held —
+    the window is the months where every named series has data. That is
+    deliberate (the optimizer zero-weights the full universe so candidates
+    share one window and common random numbers hold), but it surprises a
+    hand-written config, so the run says when a zero-weight asset is what
+    shortened the history.
+    """
+    sources = [cfg.allocation or {}, cfg.allocation_end or {}]
+    for a in cfg.accounts or ():
+        sources.append(a.allocation or {})
+        sources.append(a.allocation_end or {})
+    out: dict[str, float] = {}
+    for src in sources:
+        for k, v in src.items():
+            if k in panel.columns:
+                out[k] = max(out.get(k, 0.0), float(v))
+    return out
+
+
 def _config_path(argv: list[str]) -> str | None:
     for i, tok in enumerate(argv):
         if tok == "--config" and i + 1 < len(argv):
@@ -1397,15 +1420,24 @@ def main(argv: list[str] | None = None) -> int:
         print_summary(result, real=real)
         import pandas as pd
 
-        if result.window.min() > pd.Period(args.start, freq="M"):
-            limiting = max(
-                _held_assets(cfg, panel),
-                key=lambda a: panel[a].dropna().index.min(),
+        weights = _asset_max_weight(cfg, panel)
+        if weights and result.window.min() > pd.Period(args.start, freq="M"):
+            limiting = max(weights, key=lambda a: panel[a].dropna().index.min())
+            note = (
+                f"  Note: sampling starts {result.window.min()} (not {args.start}) "
+                f"because '{limiting}' has no earlier data."
             )
-            print(
-                f"  Note: sampling starts {result.window.min()} (not {args.start}) because "
-                f"'{limiting}' has no earlier data. Run 'poorcast assets' for coverage."
-            )
+            if weights[limiting] <= 0:
+                starts = [
+                    panel[a].dropna().index.min() for a, w in weights.items() if w > 0
+                ]
+                if starts:
+                    note += (
+                        f" The portfolio never holds it — dropping it from the"
+                        f" allocation would sample from {max(starts)} instead,"
+                        f" and would change the result."
+                    )
+            print(note + " Run 'poorcast assets' for coverage.")
         if not args.no_charts:
             tag = f"forecast_{years}y"
             path = save_report(result, Path(args.out), tag, real=real)

@@ -12,6 +12,7 @@ def synthetic_panel(start="1960-01", n=480):
     rng = np.random.default_rng(0)
     cols = {
         "us_equities": rng.normal(0.006, 0.04, n),
+        "intl_equities": rng.normal(0.005, 0.045, n),
         "us_bonds_10yr": rng.normal(0.003, 0.01, n),
         "inflation": np.full(n, 0.002),
         "income_us_equities": np.full(n, 0.0015),
@@ -218,3 +219,30 @@ def test_buy_list_honours_the_spending_shape(tmp_path, capsys):
     shaped = _ladder_plan(tmp_path / "b", "shape = 'spending'")
     assert cli.main(["ladder", "--config", str(shaped)]) == 0
     assert "in year 1 to" in capsys.readouterr().out
+
+
+def test_zero_weight_asset_shortening_the_window_is_called_out(capsys, monkeypatch):
+    """Naming an asset at weight zero still shortens the sample window.
+
+    That is deliberate — the optimizer zero-weights the whole universe so
+    every candidate resolves one window and common random numbers hold — but
+    it silently moves the answer for a hand-written allocation, so the run
+    has to say the limiting asset is one the portfolio does not hold.
+    """
+    panel = synthetic_panel(start="1950-01", n=600)
+    panel.loc[panel.index < pd.Period("1960-01", "M"), "intl_equities"] = np.nan
+    panel["income_intl_equities"] = 0.0015
+    monkeypatch.setattr(cli.data_mod, "load_panel", lambda: panel)
+
+    args = ["run", "--withdraw", "4%", "--horizons", "5", "--sims", "20",
+            "--seed", "1", "--start", "1950-01", "--no-charts", "--allocation"]
+    assert cli.main(args + ["us_equities=60,us_bonds_10yr=40,intl_equities=0"]) == 0
+    out = capsys.readouterr().out
+    assert "sampling starts 1960-01" in out
+    assert "never holds it" in out
+
+    # Held at a real weight, the same truncation is expected and unremarkable.
+    assert cli.main(args + ["us_equities=50,us_bonds_10yr=40,intl_equities=10"]) == 0
+    out = capsys.readouterr().out
+    assert "sampling starts 1960-01" in out
+    assert "never holds it" not in out
