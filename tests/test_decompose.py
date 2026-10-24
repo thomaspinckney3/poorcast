@@ -6,9 +6,9 @@ from poorcast.data import CACHE_DIR
 
 
 @pytest.mark.skipif(
-    not (CACHE_DIR / "shiller_ie_data.xls").exists()
-    or not (CACHE_DIR / "fred_CP.csv").exists(),
-    reason="needs cached Shiller/FRED data (run 'poorcast fetch')",
+    not (CACHE_DIR / "shiller_ie_data.xls").exists(),
+    reason="needs the cached Shiller workbook (run 'poorcast fetch'); "
+    "the FRED CP/GDP series are fetched on demand",
 )
 def test_decomposition_components_sum_to_total():
     from poorcast.decompose import equity_return_decomposition
